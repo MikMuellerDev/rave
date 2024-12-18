@@ -9,7 +9,7 @@ use std::thread;
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
     use anyhow::bail;
-    use blaulicht::config;
+    use blaulicht::{app, config};
     // Log to stderr (if you run with `RUST_LOG=debug`).
     use egui::TextBuffer;
     env_logger::init();
@@ -25,27 +25,27 @@ fn main() -> anyhow::Result<()> {
     };
 
     let (_from_frontend_sender, from_frontend_receiver) = crossbeam_channel::unbounded();
-    let (signal_out, signal_receiver) = crossbeam_channel::unbounded();
+    // let (signal_out, signal_receiver) = crossbeam_channel::unbounded();
 
     let (dmx_signal_out, dmx_signal_receiver) = crossbeam_channel::unbounded();
     let (app_signal_out, app_signal_receiver) = crossbeam_channel::unbounded();
 
-    {
+    // {
         // Fanout thread.
         // TODO: remove this in the long run, this will add latency.
-        thread::spawn(move || loop {
-            let s = signal_receiver.recv().unwrap();
-            dmx_signal_out.send(s).unwrap();
-            app_signal_out.send(s).unwrap();
-        });
-    }
+        // thread::spawn(move || loop {
+        //     let s = signal_receiver.recv().unwrap();
+        //     dmx_signal_out.send(s).unwrap();
+        //     app_signal_out.send(s).unwrap();
+        // });
+    // }
 
     let (system_out, _system_receiver) = crossbeam_channel::unbounded();
 
     {
         // Audio recording and analysis thread.
         let system_out = system_out.clone();
-        thread::spawn(|| dmx::audio_thread(from_frontend_receiver, signal_out, system_out));
+        thread::spawn(|| dmx::audio_thread(from_frontend_receiver, dmx_signal_out, app_signal_out, system_out));
     }
 
     {

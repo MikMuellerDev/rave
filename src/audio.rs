@@ -14,6 +14,7 @@ use audioviz::{
     },
 };
 use beat_detector::recording;
+use cpal::{traits::DeviceTrait, BufferSize, Device};
 use crossbeam_channel::Sender;
 use log::debug;
 use serialport::SerialPortInfo;
@@ -171,26 +172,24 @@ const SIGNAL_SPEED: Duration = Duration::from_millis(10);
 
 macro_rules! system_message {
     ($now:ident,$last_publish:ident,$system_out:ident,$message:expr) => {
-        message!(
-            $now,
-            $last_publish,
-            SYSTEM_MESSAGE_SPEED,
-            $system_out,
-            $message
-        )
+        if $now - $last_publish > SYSTEM_MESSAGE_SPEED {
+            $system_out.send($message).unwrap();
+            $last_publish = $now
+        }
     };
 }
 
 macro_rules! signal {
-    ($now:ident,$last_publish:ident,$system_out:ident,$message:expr) => {
-        message!($now, $last_publish, SIGNAL_SPEED, $system_out, $message)
+    ($now:ident,$last_publish:ident,$signal_0:ident, $signal_1:ident, $message:expr) => {
+        message!($now, $last_publish, SIGNAL_SPEED, $signal_0, $signal_1, $message)
     };
 }
 
 macro_rules! message {
-    ($now:ident,$last_publish:ident,$speed:ident,$out:ident,$message:expr) => {
+    ($now:ident,$last_publish:ident,$speed:ident,$out0:ident,$out1:ident,$message:expr) => {
         if $now - $last_publish > $speed {
-            $out.send($message).unwrap();
+            $out0.send($message).unwrap();
+            $out1.send($message).unwrap();
             $last_publish = $now
         }
     };
@@ -213,7 +212,8 @@ macro_rules! shift_push {
 
 pub fn run(
     mut converter: Converter,
-    signal_out: Sender<Signal>,
+    signal_out_0: Sender<Signal>,
+    signal_out_1: Sender<Signal>,
     system_out: Sender<SystemMessage>,
 ) {
     // Energy saving.
@@ -267,7 +267,7 @@ pub fn run(
         // Update volume signal.
         //
         {
-            signal!(now, time_of_last_volume_publish, signal_out, {
+            signal!(now, time_of_last_volume_publish, signal_out_0, signal_out_1, {
                 let volume_mean = ((volume_samples.iter().sum::<usize>() as f32)
                     / (volume_samples.len() as f32)
                     * 10.0) as usize;
@@ -351,7 +351,7 @@ pub fn run(
 
             let now = time::Instant::now();
 
-            signal!(now, time_of_last_beat_publish, signal_out, {
+            signal!(now, time_of_last_beat_publish, signal_out_0, signal_out_1, {
                 eprintln!(
                 "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
             );
@@ -364,23 +364,38 @@ pub fn run(
     }
 }
 
-pub fn foo(signal_out: Sender<Signal>, system_out: Sender<SystemMessage>) {
+pub fn foo(
+    device: Device,
+    signal_out_0: Sender<Signal>,
+    signal_out_1: Sender<Signal>,
+     system_out: Sender<SystemMessage>,
+    ) {
     // let (sender, receiver) = mpsc::channel();
 
     let config = Config::default();
 
-    let audio_capture_config = CaptureConfig::default();
+    let audio_capture_config = CaptureConfig {
+        sample_rate: Some(device.default_input_config().unwrap().sample_rate().0),
+        latency: None,
+        device: device.name().unwrap(),
+        buffer_size: CaptureConfig::default().buffer_size,
+        max_buffer_size: CaptureConfig::default().max_buffer_size,
+    };
 
     let capture = Capture::init(audio_capture_config.clone()).unwrap();
 
+   println!("Selected capture device: {:?}", audio_capture_config.device);
     let dev = utils::device_from_name(audio_capture_config.device).unwrap();
 
     // Beat detection
-    let s = signal_out.clone();
+    let s0 = signal_out_0.clone();
+    let s1 = signal_out_1.clone();
     let handle = recording::start_detector_thread(
         move |info| {
             println!("beat: {info:?}");
-            s.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
+            s0.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
+                .unwrap();
+            s1.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
                 .unwrap();
         },
         Some(dev),
@@ -400,5 +415,5 @@ pub fn foo(signal_out: Sender<Signal>, system_out: Sender<SystemMessage>) {
     // let (signal_out, signal_receiver) = mpsc::channel();
     // let (system_out, system_receiver) = mpsc::channel();
 
-    run(converter, signal_out, system_out);
+    run(converter, signal_out_0, signal_out_1, system_out);
 }

@@ -66,7 +66,16 @@ impl DmxUniverse {
                 self.write_to_serial();
             }
             Signal::Bass(_) => todo!(),
-            Signal::Volume(_) => {}
+            Signal::Volume(v) => {
+                if v < 10 {
+                    self.channels[1] = 255;
+                    self.channels[2] = 255;
+                    self.channels[3] = 0;
+                    self.channels[4] = 255;
+
+                    self.write_to_serial();
+                } 
+            }
         }
     }
 
@@ -157,7 +166,8 @@ pub fn dmx_thread(signal_receiver: Receiver<Signal>, system_out: Sender<SystemMe
 
 pub fn audio_thread(
     from_frontend: Receiver<FromFrontend>,
-    signal_out: Sender<Signal>,
+    signal_out_0: Sender<Signal>,
+    signal_out_1: Sender<Signal>,
     system_out: Sender<SystemMessage>,
 ) {
     // let begin_msg = from_frontend.recv().unwrap();
@@ -206,17 +216,29 @@ pub fn audio_thread(
                 panic!("No devices");
             }
 
-            let host = devices[0].0.name().to_string();
-            let device_name = devices[0].1.name().unwrap();
 
+            let selected_device = devices.iter().find(|dev| dev.1.name().unwrap().contains("CABLE Output")).unwrap();
+
+            let host = selected_device.0.  name().to_string();
+            let device_name = selected_device.1.name().unwrap();
+
+            println!("{}", devices.iter().map(|d|d.1.name().unwrap()).collect::<Vec<String>>().join("|"));
             println!("Selected default audio device: {host} | {device_name}");
 
             device = Some(utils::device_from_names(host, device_name).unwrap());
 
             device_changed = true;
         } else if device_changed {
-            let (sig, sys) = (signal_out.clone(), system_out.clone());
-            thread::spawn(move || audio::foo(sig, sys));
+            let (sig_0, sig_1, sys) = (signal_out_0.clone(), signal_out_1.clone(), system_out.clone());
+            {
+            let device = device.clone();
+            thread::spawn(move || audio::foo(
+                device.unwrap(),
+                sig_0,
+                sig_1,
+                 sys,
+                ));
+            }
 
             device_changed = false;
             println!(
