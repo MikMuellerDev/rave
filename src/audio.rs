@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
     thread,
     time::{self, Duration},
+    u8,
 };
 
 use audioviz::audio_capture::{capture::Capture, config::Config as CaptureConfig};
@@ -16,10 +17,13 @@ use audioviz::{
 use beat_detector::recording;
 use cpal::{traits::DeviceTrait, BufferSize, Device};
 use crossbeam_channel::Sender;
-use log::debug;
-use serialport::SerialPortInfo;
+use log::{debug, info, warn};
+use serialport::{SerialPortInfo, SerialPortType};
 
-use crate::utils::{self, select_audio_device};
+use crate::{
+    dmx::{DmxUniverse, USB_DEVICES},
+    utils::{self, select_audio_device},
+};
 
 fn map(x: isize, in_min: isize, in_max: isize, out_min: isize, out_max: isize) -> usize {
     let divisor = (in_max - in_min).max(1);
@@ -180,17 +184,11 @@ macro_rules! system_message {
 }
 
 macro_rules! signal {
-    ($now:ident,$last_publish:ident,$signal_0:ident, $signal_1:ident, $message:expr) => {
-        message!($now, $last_publish, SIGNAL_SPEED, $signal_0, $signal_1, $message)
-    };
-}
-
-macro_rules! message {
-    ($now:ident,$last_publish:ident,$speed:ident,$out0:ident,$out1:ident,$message:expr) => {
-        if $now - $last_publish > $speed {
-            $out0.send($message).unwrap();
-            $out1.send($message).unwrap();
-            $last_publish = $now
+    ($now:ident,$last_publish:ident,$out0:ident,$dmx:ident,$tx_signal:expr) => {
+        if $now - $last_publish > SIGNAL_SPEED {
+            $out0.send($tx_signal).unwrap();
+            $dmx.signal($tx_signal);
+            $last_publish = $now;
         }
     };
 }
@@ -213,9 +211,53 @@ macro_rules! shift_push {
 pub fn run(
     mut converter: Converter,
     signal_out_0: Sender<Signal>,
-    signal_out_1: Sender<Signal>,
+    // signal_out_1: Sender<Signal>,
     system_out: Sender<SystemMessage>,
 ) {
+    //
+    // DMX interfaces.
+    //
+    let ports = serialport::available_ports().unwrap();
+
+    // Update available ports to frontend.
+    system_out
+        .send(SystemMessage::SerialDevicesView(ports.clone()))
+        .unwrap();
+
+    println!("{ports:?}");
+
+    let mut serial_port = ports.into_iter().find(|p| match p.port_type.clone() {
+        SerialPortType::UsbPort(usb) => USB_DEVICES
+            .iter()
+            .any(|d| d.pid == usb.pid && d.vid == usb.vid),
+        _ => false,
+    });
+
+    if serial_port.is_none() {
+        warn!("No default DMX serial output available");
+    }
+
+    let mut dmx_universe = match serial_port {
+        Some(port) => {
+            let serial_port_name = port.port_name.clone();
+            info!("[DMX] Using serial device: {serial_port_name}");
+            system_out
+                .send(SystemMessage::SerialSelected(Some(port.clone())))
+                .unwrap();
+            DmxUniverse::new(serial_port_name)
+        }
+        None => DmxUniverse::new_dummy(),
+    };
+
+    // let Some(port) = port.cloned() else {
+    //     warn!("[DMX] No default serial device available...");
+    //     system_out
+    //         .send(SystemMessage::SerialSelected(None))
+    //         .unwrap();
+    // };
+
+    // let mut port = Some(port);
+
     // Energy saving.
     let mut loop_inactive = true;
 
@@ -267,13 +309,19 @@ pub fn run(
         // Update volume signal.
         //
         {
-            signal!(now, time_of_last_volume_publish, signal_out_0, signal_out_1, {
-                let volume_mean = ((volume_samples.iter().sum::<usize>() as f32)
-                    / (volume_samples.len() as f32)
-                    * 10.0) as usize;
+            signal!(
+                now,
+                time_of_last_volume_publish,
+                signal_out_0,
+                dmx_universe,
+                {
+                    let volume_mean = ((volume_samples.iter().sum::<usize>() as f32)
+                        / (volume_samples.len() as f32)
+                        * 10.0) as usize;
 
-                Signal::Volume(volume_mean as u8)
-            });
+                    Signal::Volume((volume_mean as u8).saturating_mul(10u8))
+                }
+            );
 
             shift_push!(
                 volume_samples,
@@ -289,6 +337,28 @@ pub fn run(
                     .volume as usize
             );
         }
+
+        //
+        // Update Bass.
+        //
+
+        signal!(
+            now,
+            time_of_last_beat_publish,
+            signal_out_0,
+            dmx_universe,
+            {
+                let v = values
+                    .iter()
+                    .filter(|f| f.freq <= 150.0)
+                    .map(|f| f.volume as usize)
+                    .collect::<Vec<usize>>();
+
+                let avg = v.iter().sum::<usize>() as f32 / v.len() as f32;
+
+                Signal::Bass((avg * 10.0) as u8)
+            }
+        );
 
         //
         // Update loudest signal.
@@ -351,25 +421,26 @@ pub fn run(
 
             let now = time::Instant::now();
 
-            signal!(now, time_of_last_beat_publish, signal_out_0, signal_out_1, {
-                eprintln!(
+            signal!(
+                now,
+                time_of_last_beat_publish,
+                signal_out_0,
+                dmx_universe,
+                {
+                    eprintln!(
                 "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
             );
 
-                last_index = index_mapped;
+                    last_index = index_mapped;
 
-                Signal::BeatVolume(index_mapped as u8)
-            });
+                    Signal::BeatVolume(index_mapped as u8)
+                }
+            );
         }
     }
 }
 
-pub fn foo(
-    device: Device,
-    signal_out_0: Sender<Signal>,
-    signal_out_1: Sender<Signal>,
-     system_out: Sender<SystemMessage>,
-    ) {
+pub fn foo(device: Device, signal_out_0: Sender<Signal>, system_out: Sender<SystemMessage>) {
     // let (sender, receiver) = mpsc::channel();
 
     let config = Config::default();
@@ -384,18 +455,16 @@ pub fn foo(
 
     let capture = Capture::init(audio_capture_config.clone()).unwrap();
 
-   println!("Selected capture device: {:?}", audio_capture_config.device);
+    println!("Selected capture device: {:?}", audio_capture_config.device);
     let dev = utils::device_from_name(audio_capture_config.device).unwrap();
 
+    // TODO: beat detection is cooked.
     // Beat detection
     let s0 = signal_out_0.clone();
-    let s1 = signal_out_1.clone();
     let handle = recording::start_detector_thread(
         move |info| {
             println!("beat: {info:?}");
             s0.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
-                .unwrap();
-            s1.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
                 .unwrap();
         },
         Some(dev),
@@ -415,5 +484,5 @@ pub fn foo(
     // let (signal_out, signal_receiver) = mpsc::channel();
     // let (system_out, system_receiver) = mpsc::channel();
 
-    run(converter, signal_out_0, signal_out_1, system_out);
+    run(converter, signal_out_0, system_out);
 }

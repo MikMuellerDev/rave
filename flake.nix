@@ -16,12 +16,26 @@
          fontconfig
          libGL
          alsa-lib
+         xorg.libxcb
+  wayland
+  xorg.libX11
+  xorg.libXcursor
+  xorg.libXi
+  xorg.libXrandr
         ];
 
         packages = with pkgs; [
+         libGL
          libudev-zero
          pkg-config
          alsa-lib
+         xorg.libxcb
+  libxkbcommon
+  wayland
+  xorg.libX11
+  xorg.libXcursor
+  xorg.libXi
+  xorg.libXrandr
         ];
       in
       {

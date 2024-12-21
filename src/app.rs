@@ -2,12 +2,12 @@ use std::time::Instant;
 
 use audioviz::audio_capture::config::Config;
 use cpal::Device;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use eframe::glow::COLOR;
 use egui::{Color32, Layout, Pos2, Shape, Stroke, TextBuffer, Vec2};
 use serialport::SerialPortInfo;
 
-use crate::{audio::Signal, config};
+use crate::{audio::Signal, config, dmx::DMXControl};
 
 // pub enum Signal {
 //     Volume(u8),
@@ -48,13 +48,16 @@ pub struct BlaulichtApp {
     #[serde(skip)]
     selected_serial_device: Option<SerialPortInfo>,
 
+    // #[serde(skip)]
+    // dmx_control_sender: Sender<DMXControl>,
     #[serde(skip)]
     config: config::Config,
 }
 
 impl Default for BlaulichtApp {
     fn default() -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded();
+        let (_, receiver) = crossbeam_channel::unbounded();
+        // let (sender, _) = crossbeam_channel::unbounded();
 
         Self {
             // Example stuff:
@@ -67,6 +70,7 @@ impl Default for BlaulichtApp {
             // Serial
             serial_devices: vec![],
             selected_serial_device: None,
+            // dmx_control_sender: sender,
 
             // Config
             config: config::Config::default(),
@@ -79,6 +83,7 @@ impl BlaulichtApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         signal_in: Receiver<Signal>,
+        // dmx_control_sender: Sender<DMXControl>,
         config: config::Config,
     ) -> Self {
         // This is also where you can customize the look and feel of egui using
@@ -100,6 +105,7 @@ impl BlaulichtApp {
             signal_in,
             serial_devices: vec![],
             selected_serial_device: None,
+            // dmx_control_sender,
             config,
         }
     }
@@ -160,9 +166,16 @@ impl eframe::App for BlaulichtApp {
                     if ui.button(dev.port_name.clone()).clicked() {
                         // ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 
-                        self.selected_serial_device = Some(dev);
+                        self.selected_serial_device = Some(dev.clone());
 
                         // TODO: notify DMX thread...
+                        //
+                        //
+                        println!("update");
+
+                        // self.dmx_control_sender
+                        //     .send(DMXControl::ChangePort(Some(dev)))
+                        //     .unwrap();
 
                         ctx.request_repaint();
                     }
@@ -172,6 +185,12 @@ impl eframe::App for BlaulichtApp {
                     self.selected_serial_device = None;
 
                     // TODO: notify DMX thread...
+                    //
+                    println!("update none");
+
+                    // self.dmx_control_sender
+                    //     .send(DMXControl::ChangePort(None))
+                    //     .unwrap();
 
                     ctx.request_repaint();
                 }

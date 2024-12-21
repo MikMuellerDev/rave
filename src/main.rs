@@ -8,6 +8,8 @@ use std::thread;
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
+    use std::sync::mpsc;
+
     use anyhow::bail;
     use blaulicht::{app, config};
     // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -27,17 +29,17 @@ fn main() -> anyhow::Result<()> {
     let (_from_frontend_sender, from_frontend_receiver) = crossbeam_channel::unbounded();
     // let (signal_out, signal_receiver) = crossbeam_channel::unbounded();
 
-    let (dmx_signal_out, dmx_signal_receiver) = crossbeam_channel::unbounded();
+    // let (dmx_signal_out, dmx_signal_receiver) = crossbeam_channel::unbounded();
     let (app_signal_out, app_signal_receiver) = crossbeam_channel::unbounded();
 
     // {
-        // Fanout thread.
-        // TODO: remove this in the long run, this will add latency.
-        // thread::spawn(move || loop {
-        //     let s = signal_receiver.recv().unwrap();
-        //     dmx_signal_out.send(s).unwrap();
-        //     app_signal_out.send(s).unwrap();
-        // });
+    // Fanout thread.
+    // TODO: remove this in the long run, this will add latency.
+    // thread::spawn(move || loop {
+    //     let s = signal_receiver.recv().unwrap();
+    //     dmx_signal_out.send(s).unwrap();
+    //     app_signal_out.send(s).unwrap();
+    // });
     // }
 
     let (system_out, _system_receiver) = crossbeam_channel::unbounded();
@@ -45,13 +47,23 @@ fn main() -> anyhow::Result<()> {
     {
         // Audio recording and analysis thread.
         let system_out = system_out.clone();
-        thread::spawn(|| dmx::audio_thread(from_frontend_receiver, dmx_signal_out, app_signal_out, system_out));
+        thread::spawn(|| {
+            dmx::audio_thread(
+                from_frontend_receiver,
+                app_signal_out,
+                system_out,
+            )
+        });
     }
 
-    {
+    // let (dmx_control_sender, dmx_control_receiver) = crossbeam_channel::unbounded();
+
+    // {
         // DMX thread.
-        thread::spawn(move || dmx::dmx_thread(dmx_signal_receiver, system_out));
-    }
+        // thread::spawn(move || {
+        //     dmx::dmx_thread(dmx_control_receiver, dmx_signal_receiver, system_out)
+        // });
+    // }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
