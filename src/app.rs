@@ -27,21 +27,33 @@ pub struct BlaulichtApp {
     // Example stuff:
     label: String,
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
+    #[serde(skip)]
     value: f32,
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
+    #[serde(skip)]
     beat: bool,
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
+    #[serde(skip)]
     beat_algo: bool,
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
+    #[serde(skip)]
     beat_algo_time: Instant,
 
-    #[serde(skip)] // This how you opt-out of serialization of a field
+    #[serde(skip)]
     signal_in: Receiver<Signal>,
 
+    //
+    // Audio.
+    //
+    #[serde(skip)]
+    audio_devices: Vec<Device>,
+
+    #[serde(skip)]
+    selected_audio_device: Option<Device>,
+
+    //
+    // Serial.
+    //
     #[serde(skip)]
     serial_devices: Vec<SerialPortInfo>,
 
@@ -67,6 +79,11 @@ impl Default for BlaulichtApp {
             beat_algo: false,
             beat_algo_time: Instant::now(),
             signal_in: receiver,
+
+            // Audio.
+            audio_devices: vec![],
+            selected_audio_device: None,
+
             // Serial
             serial_devices: vec![],
             selected_serial_device: None,
@@ -103,6 +120,10 @@ impl BlaulichtApp {
             beat_algo: false,
             beat_algo_time: Instant::now(),
             signal_in,
+
+            audio_devices: vec![],
+            selected_audio_device: None,
+
             serial_devices: vec![],
             selected_serial_device: None,
             // dmx_control_sender,

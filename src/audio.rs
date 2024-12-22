@@ -164,6 +164,10 @@ pub enum Signal {
 
 pub enum SystemMessage {
     LoopSpeed(Duration),
+    // Audio.
+    AudioSelected(Option<SerialPortInfo>),
+    AudioDevicesView(Vec<SerialPortInfo>),
+    // Serial.
     SerialSelected(Option<SerialPortInfo>),
     SerialDevicesView(Vec<SerialPortInfo>),
 }
@@ -209,11 +213,71 @@ macro_rules! shift_push {
 }
 
 pub fn run(
-    mut converter: Converter,
+    // device: Device,
     signal_out_0: Sender<Signal>,
     // signal_out_1: Sender<Signal>,
     system_out: Sender<SystemMessage>,
 ) {
+    let config = Config::default();
+
+    // TODO: select a device!
+
+    let audio_capture_config = CaptureConfig {
+        sample_rate: Some(device.default_input_config().unwrap().sample_rate().0),
+        latency: None,
+        device: device.name().unwrap(),
+        buffer_size: CaptureConfig::default().buffer_size,
+        max_buffer_size: CaptureConfig::default().max_buffer_size,
+    };
+
+    let capture = Capture::init(audio_capture_config.clone()).unwrap();
+
+    println!("Selected capture device: {:?}", audio_capture_config.device);
+    let dev = utils::device_from_name(audio_capture_config.device).unwrap();
+
+    // TODO: beat detection is cooked.
+    // Beat detection
+    let s0 = signal_out_0.clone();
+    let handle = recording::start_detector_thread(
+        move |info| {
+            println!("beat: {info:?}");
+            s0.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
+                .unwrap();
+        },
+        Some(dev),
+    )
+    .unwrap();
+    // End beat detection
+
+    let converter: Converter = match config.visualisation {
+        Visualisation::Spectrum => {
+            let stream = Stream::init_with_capture(&capture, config.audio.clone());
+
+            Converter::from_stream(stream, config.clone())
+        }
+        Visualisation::Scope => Converter::from_capture(capture, config.clone()),
+    };
+
+    // let (signal_out, signal_receiver) = mpsc::channel();
+    // let (system_out, system_receiver) = mpsc::channel();
+
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    // END PREPWORK
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+
     //
     // DMX interfaces.
     //
@@ -440,49 +504,8 @@ pub fn run(
     }
 }
 
-pub fn foo(device: Device, signal_out_0: Sender<Signal>, system_out: Sender<SystemMessage>) {
+pub fn foo() {
     // let (sender, receiver) = mpsc::channel();
-
-    let config = Config::default();
-
-    let audio_capture_config = CaptureConfig {
-        sample_rate: Some(device.default_input_config().unwrap().sample_rate().0),
-        latency: None,
-        device: device.name().unwrap(),
-        buffer_size: CaptureConfig::default().buffer_size,
-        max_buffer_size: CaptureConfig::default().max_buffer_size,
-    };
-
-    let capture = Capture::init(audio_capture_config.clone()).unwrap();
-
-    println!("Selected capture device: {:?}", audio_capture_config.device);
-    let dev = utils::device_from_name(audio_capture_config.device).unwrap();
-
-    // TODO: beat detection is cooked.
-    // Beat detection
-    let s0 = signal_out_0.clone();
-    let handle = recording::start_detector_thread(
-        move |info| {
-            println!("beat: {info:?}");
-            s0.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
-                .unwrap();
-        },
-        Some(dev),
-    )
-    .unwrap();
-    // End beat detection
-
-    let converter: Converter = match config.visualisation {
-        Visualisation::Spectrum => {
-            let stream = Stream::init_with_capture(&capture, config.audio.clone());
-
-            Converter::from_stream(stream, config.clone())
-        }
-        Visualisation::Scope => Converter::from_capture(capture, config.clone()),
-    };
-
-    // let (signal_out, signal_receiver) = mpsc::channel();
-    // let (system_out, system_receiver) = mpsc::channel();
 
     run(converter, signal_out_0, system_out);
 }
