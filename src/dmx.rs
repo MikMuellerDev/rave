@@ -1,4 +1,8 @@
 use std::{
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -10,7 +14,7 @@ use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 
 use crate::{
     app::FromFrontend,
-    audio::{self, Signal, SystemMessage},
+    audio::{self, AudioThreadControlSignal, Signal, SystemMessage},
     utils,
 };
 
@@ -105,7 +109,7 @@ impl DmxUniverseReal {
                     self.write_to_serial();
                     spin_sleep::sleep(Duration::from_millis(1));
 
-                    self.channels[1 + CHANNEL_OFFSET_STROBE -1] = 0;
+                    self.channels[1 + CHANNEL_OFFSET_STROBE - 1] = 0;
 
                     self.write_to_serial();
                 }
@@ -235,9 +239,11 @@ pub enum DMXControl {
 //         }
 //     }
 // }
+//
 
 pub fn audio_thread(
     from_frontend: Receiver<FromFrontend>,
+    audio_thread_control_signal: Arc<AtomicU8>,
     signal_out_0: Sender<Signal>,
     system_out: Sender<SystemMessage>,
 ) {
@@ -272,7 +278,7 @@ pub fn audio_thread(
         match from_frontend.try_recv() {
             // Ok(FromFrontend::NewWindow(_)) => unreachable!(),
             Ok(FromFrontend::SelectInputDevice(dev)) => {
-                device = Some(dev.clone());
+                device = dev.clone();
                 device_changed = true;
             }
             Err(TryRecvError::Empty) => {}
@@ -283,36 +289,58 @@ pub fn audio_thread(
 
         if device.is_none() {
             let devices = utils::get_input_devices_flat();
-            if devices.is_empty() {
-                panic!("No devices");
-            }
+            system_out
+                .send(SystemMessage::AudioDevicesView(devices))
+                .unwrap();
 
-            let selected_device = devices
-                .iter()
-                .find(|dev| dev.1.name().unwrap().contains("CABLE Output"))
-                .unwrap_or_else(|| &devices[0]);
+            device_changed = false;
 
-            let host = selected_device.0.name().to_string();
-            let device_name = selected_device.1.name().unwrap();
+            // let selected_device = devices
+            //     .iter()
+            //     .find(|dev| dev.1.name().unwrap().contains("CABLE Output"))
+            //     .unwrap_or_else(|| &devices[0]);
+            //
+            // let host = selected_device.0.name().to_string();
+            // let device_name = selected_device.1.name().unwrap();
 
-            println!(
-                "{}",
-                devices
-                    .iter()
-                    .map(|d| d.1.name().unwrap())
-                    .collect::<Vec<String>>()
-                    .join("|")
-            );
-            println!("Selected default audio device: {host} | {device_name}");
+            // println!(
+            //     "{}",
+            //     devices
+            //         .iter()
+            //         .map(|d| d.1.name().unwrap())
+            //         .collect::<Vec<String>>()
+            //         .join("|")
+            // );
+            // println!("Selected default audio device: {host} | {device_name}");
 
-            device = Some(utils::device_from_names(host, device_name).unwrap());
-
-            device_changed = true;
+            // device = Some(utils::device_from_names(host, device_name).unwrap());
+            // system_out
+            //     .send(SystemMessage::AudioSelected(device.clone()))
+            //     .unwrap();
         } else if device_changed {
+            system_out
+                .send(SystemMessage::AudioSelected(device.clone()))
+                .unwrap();
+
             let (sig_0, sys) = (signal_out_0.clone(), system_out.clone());
             {
-                let device = device.clone();
-                thread::spawn(move || audio::foo(device.unwrap(), sig_0, sys));
+                let device = device.clone().unwrap();
+                let audio_thread_control_signal = audio_thread_control_signal.clone();
+
+                thread::spawn(move || {
+                    if let Err(err) = audio::run(
+                        device,
+                        sig_0,
+                        sys.clone(),
+                        audio_thread_control_signal.clone(),
+                    ) {
+                        // TODO: handle the audio backend error.
+                        sys.send(SystemMessage::Log(format!("[audio] {err}")))
+                            .unwrap();
+                    }
+                    audio_thread_control_signal
+                        .store(AudioThreadControlSignal::DEAD, Ordering::Relaxed);
+                });
             }
 
             device_changed = false;

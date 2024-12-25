@@ -1,13 +1,24 @@
-use std::time::Instant;
+use std::{
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use audioviz::audio_capture::config::Config;
-use cpal::Device;
-use crossbeam_channel::{Receiver, Sender};
+use cpal::{traits::DeviceTrait, Device, HostId};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use eframe::glow::COLOR;
 use egui::{Color32, Layout, Pos2, Shape, Stroke, TextBuffer, Vec2};
 use serialport::SerialPortInfo;
 
-use crate::{audio::Signal, config, dmx::DMXControl};
+use crate::{
+    audio::{AudioThreadControlSignal, Signal, SystemMessage},
+    config,
+    dmx::DMXControl,
+};
 
 // pub enum Signal {
 //     Volume(u8),
@@ -17,13 +28,15 @@ use crate::{audio::Signal, config, dmx::DMXControl};
 
 #[derive(Clone)]
 pub enum FromFrontend {
-    SelectInputDevice(Device),
+    SelectInputDevice(Option<Device>),
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct BlaulichtApp {
+    log: Vec<String>,
+
     // Example stuff:
     label: String,
 
@@ -42,11 +55,14 @@ pub struct BlaulichtApp {
     #[serde(skip)]
     signal_in: Receiver<Signal>,
 
+    #[serde(skip)]
+    sys_out: Receiver<SystemMessage>,
+
     //
     // Audio.
     //
     #[serde(skip)]
-    audio_devices: Vec<Device>,
+    audio_devices: Vec<(HostId, Device)>,
 
     #[serde(skip)]
     selected_audio_device: Option<Device>,
@@ -64,14 +80,23 @@ pub struct BlaulichtApp {
     // dmx_control_sender: Sender<DMXControl>,
     #[serde(skip)]
     config: config::Config,
+
+    #[serde(skip)]
+    to_audio: Sender<FromFrontend>,
+
+    #[serde(skip)]
+    audio_thread_control_signal: Arc<AtomicU8>,
 }
 
 impl Default for BlaulichtApp {
     fn default() -> Self {
         let (_, receiver) = crossbeam_channel::unbounded();
-        // let (sender, _) = crossbeam_channel::unbounded();
+        let (sender, _) = crossbeam_channel::unbounded();
+        let (_, recv_sys) = crossbeam_channel::unbounded();
+        let mut audio_thread_control_signal = Arc::new(AtomicU8::new(0));
 
         Self {
+            log: vec![],
             // Example stuff:
             label: "Hello World!".to_owned(),
             value: 2.7,
@@ -91,6 +116,10 @@ impl Default for BlaulichtApp {
 
             // Config
             config: config::Config::default(),
+            to_audio: sender,
+            audio_thread_control_signal,
+
+            sys_out: recv_sys,
         }
     }
 }
@@ -99,8 +128,10 @@ impl BlaulichtApp {
     /// Called once before the first frame.
     pub fn new(
         cc: &eframe::CreationContext<'_>,
+        from_frontend: Sender<FromFrontend>,
+        audio_thread_control_signal: Arc<AtomicU8>,
         signal_in: Receiver<Signal>,
-        // dmx_control_sender: Sender<DMXControl>,
+        sys_recv: Receiver<SystemMessage>,
         config: config::Config,
     ) -> Self {
         // This is also where you can customize the look and feel of egui using
@@ -114,6 +145,7 @@ impl BlaulichtApp {
         // }
 
         Self {
+            log: vec![],
             label: "foo label".into(),
             value: 0f32,
             beat: false,
@@ -126,9 +158,39 @@ impl BlaulichtApp {
 
             serial_devices: vec![],
             selected_serial_device: None,
+            to_audio: from_frontend,
             // dmx_control_sender,
+            sys_out: sys_recv,
+            audio_thread_control_signal,
             config,
         }
+    }
+
+    fn select_audio_device(&mut self, device: Option<Device>) {
+        if self.selected_audio_device.is_some() {
+            while self.audio_thread_control_signal.load(Ordering::Relaxed)
+                != AudioThreadControlSignal::DEAD
+            {
+                self.audio_thread_control_signal
+                    .store(AudioThreadControlSignal::ABORT, Ordering::Relaxed);
+
+                println!("Waiting for audio thread to die...");
+                thread::sleep(Duration::from_millis(100));
+            }
+
+            self.audio_thread_control_signal
+                .store(AudioThreadControlSignal::CONTINUE, Ordering::Relaxed);
+        }
+
+        println!("Audio thread dead.");
+
+        self.to_audio
+            .send(FromFrontend::SelectInputDevice(device))
+            .unwrap();
+
+        // todo: abort audio loop
+
+        println!("updated audio device in App");
     }
 }
 
@@ -165,58 +227,126 @@ impl eframe::App for BlaulichtApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Blaulicht");
 
-            let button_title = format!(
-                "Select Serial Device: {}",
-                self.selected_serial_device
-                    .as_ref()
-                    .map_or_else(|| "NONE".to_string(), |dev| { dev.port_name.to_string() })
-            );
+            for msg in self.log.iter() {
+                ui.monospace(msg);
+            }
 
-            ui.menu_button(button_title, |ui| {
-                let all_devices = self.serial_devices.clone().into_iter().chain(
-                    self.config
-                        .extra_serial_paths
-                        .iter()
-                        .map(|dev| SerialPortInfo {
-                            port_name: dev.to_string_lossy().into(),
-                            port_type: serialport::SerialPortType::Unknown,
-                        }),
+            {
+                let button_title = format!(
+                    "Select Serial Device: {}",
+                    self.selected_serial_device
+                        .as_ref()
+                        .map_or_else(|| "NONE".to_string(), |dev| { dev.port_name.to_string() })
                 );
 
-                for dev in all_devices {
-                    if ui.button(dev.port_name.clone()).clicked() {
-                        // ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                ui.menu_button(button_title, |ui| {
+                    let all_devices = self.serial_devices.clone().into_iter().chain(
+                        self.config
+                            .extra_serial_paths
+                            .iter()
+                            .map(|dev| SerialPortInfo {
+                                port_name: dev.to_string_lossy().into(),
+                                port_type: serialport::SerialPortType::Unknown,
+                            }),
+                    );
 
-                        self.selected_serial_device = Some(dev.clone());
+                    for dev in all_devices {
+                        if ui.button(dev.port_name.clone()).clicked() {
+                            // ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+
+                            self.selected_serial_device = Some(dev.clone());
+
+                            // TODO: notify DMX thread...
+                            //
+                            //
+                            println!("update");
+
+                            // self.dmx_control_sender
+                            //     .send(DMXControl::ChangePort(Some(dev)))
+                            //     .unwrap();
+
+                            ctx.request_repaint();
+                        }
+                    }
+
+                    if ui.button("NONE").clicked() {
+                        self.selected_serial_device = None;
 
                         // TODO: notify DMX thread...
                         //
-                        //
-                        println!("update");
+                        println!("update none");
 
                         // self.dmx_control_sender
-                        //     .send(DMXControl::ChangePort(Some(dev)))
+                        //     .send(DMXControl::ChangePort(None))
                         //     .unwrap();
 
                         ctx.request_repaint();
                     }
-                }
+                });
+            }
 
-                if ui.button("NONE").clicked() {
-                    self.selected_serial_device = None;
-
-                    // TODO: notify DMX thread...
-                    //
-                    println!("update none");
-
-                    // self.dmx_control_sender
-                    //     .send(DMXControl::ChangePort(None))
-                    //     .unwrap();
-
-                    ctx.request_repaint();
-                }
-            });
             ui.add_space(16.0);
+
+            // Second button
+
+            {
+                let button_title = format!(
+                    "Select Audio Device: {}",
+                    self.selected_audio_device
+                        .as_ref()
+                        .map_or_else(|| "NONE".to_string(), |dev| { dev.name().unwrap() })
+                );
+
+                ui.menu_button(button_title, |ui| {
+                    // TODO: this is horrible, it is soo slow.
+                    for dev in self.audio_devices.clone().into_iter() {
+                        if ui
+                            .button(format!("{}:{}", dev.0.name(), dev.1.name().unwrap()))
+                            .clicked()
+                        {
+                            // ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+
+                            // self.selected_audio_device = Some(dev.1.clone());
+                            //
+                            // // TODO: notify DMX thread...
+                            // //
+                            // //
+                            // println!("update");
+                            // self.to_audio
+                            //     .send(FromFrontend::SelectInputDevice(Some(dev.1.clone())))
+                            //     .unwrap();
+                            //
+                            self.select_audio_device(Some(dev.1.clone()));
+
+                            // self.dmx_control_sender
+                            //     .send(DMXControl::ChangePort(Some(dev)))
+                            //     .unwrap();
+
+                            ctx.request_repaint();
+                        }
+                    }
+
+                    if ui.button("NONE").clicked() {
+                        // self.selected_audio_device = None;
+
+                        // TODO: notify DMX thread...
+                        //
+                        // println!("update none");
+                        //
+                        // // self.dmx_control_sender
+                        // //     .send(DMXControl::ChangePort(None))
+                        // //     .unwrap();
+                        // self.to_audio
+                        //     .send(FromFrontend::SelectInputDevice(None))
+                        //     .unwrap();
+                        //
+
+                        self.select_audio_device(None);
+
+                        ctx.request_repaint();
+                    }
+                });
+            }
 
             if let Ok(sig) = self.signal_in.try_recv() {
                 if self.beat_algo_time.elapsed().as_millis() > 10 {
@@ -236,6 +366,21 @@ impl eframe::App for BlaulichtApp {
                         self.beat_algo_time = Instant::now();
                     }
                 }
+            }
+
+            match self.sys_out.try_recv() {
+                Ok(SystemMessage::Log(msg)) => self.log.push(msg),
+                Ok(SystemMessage::LoopSpeed(speed)) => {}
+                Ok(SystemMessage::AudioDevicesView(devices)) => {
+                    self.audio_devices = devices;
+                }
+                Ok(SystemMessage::AudioSelected(dev)) => {
+                    self.selected_audio_device = dev;
+                }
+                Ok(SystemMessage::SerialDevicesView(devices)) => self.serial_devices = devices,
+                Ok(SystemMessage::SerialSelected(dev)) => self.selected_serial_device = dev,
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => panic!("a"),
             }
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {

@@ -2,13 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
                                                                    //
 use anyhow::anyhow;
+use blaulicht::audio::AudioThreadControlSignal;
 use blaulicht::dmx;
-use std::thread;
 
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
-    use std::sync::mpsc;
+    use std::{sync::{atomic::AtomicU8, mpsc, Arc}, thread};
 
     use anyhow::bail;
     use blaulicht::{app, config};
@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let (_from_frontend_sender, from_frontend_receiver) = crossbeam_channel::unbounded();
+    let (from_frontend_sender, from_frontend_receiver) = crossbeam_channel::unbounded();
     // let (signal_out, signal_receiver) = crossbeam_channel::unbounded();
 
     // let (dmx_signal_out, dmx_signal_receiver) = crossbeam_channel::unbounded();
@@ -43,13 +43,16 @@ fn main() -> anyhow::Result<()> {
     // }
 
     let (system_out, _system_receiver) = crossbeam_channel::unbounded();
+    let audio_thread_control_signal = Arc::new(AtomicU8::new(AudioThreadControlSignal::CONTINUE));
 
     {
         // Audio recording and analysis thread.
         let system_out = system_out.clone();
+        let audio_thread_control_signal = audio_thread_control_signal.clone();
         thread::spawn(|| {
             dmx::audio_thread(
                 from_frontend_receiver,
+                audio_thread_control_signal,
                 app_signal_out,
                 system_out,
             )
@@ -59,10 +62,10 @@ fn main() -> anyhow::Result<()> {
     // let (dmx_control_sender, dmx_control_receiver) = crossbeam_channel::unbounded();
 
     // {
-        // DMX thread.
-        // thread::spawn(move || {
-        //     dmx::dmx_thread(dmx_control_receiver, dmx_signal_receiver, system_out)
-        // });
+    // DMX thread.
+    // thread::spawn(move || {
+    //     dmx::dmx_thread(dmx_control_receiver, dmx_signal_receiver, system_out)
+    // });
     // }
 
     let native_options = eframe::NativeOptions {
@@ -85,7 +88,10 @@ fn main() -> anyhow::Result<()> {
         Box::new(|cc| {
             Ok(Box::new(blaulicht::BlaulichtApp::new(
                 cc,
+                from_frontend_sender,
+                audio_thread_control_signal,
                 app_signal_receiver,
+                _system_receiver,
                 config,
             )))
         }),

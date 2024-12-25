@@ -1,11 +1,16 @@
 use std::{
+    borrow::Cow,
     collections::VecDeque,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
     thread,
     time::{self, Duration},
     u8,
 };
 
+use anyhow::anyhow;
 use audioviz::audio_capture::{capture::Capture, config::Config as CaptureConfig};
 use audioviz::{
     audio_capture::capture::CaptureReceiver,
@@ -15,14 +20,14 @@ use audioviz::{
     },
 };
 use beat_detector::recording;
-use cpal::{traits::DeviceTrait, BufferSize, Device};
+use cpal::{traits::DeviceTrait, BufferSize, Device, HostId};
 use crossbeam_channel::Sender;
 use log::{debug, info, warn};
 use serialport::{SerialPortInfo, SerialPortType};
 
 use crate::{
     dmx::{DmxUniverse, USB_DEVICES},
-    utils::{self, select_audio_device},
+    utils::{self},
 };
 
 fn map(x: isize, in_min: isize, in_max: isize, out_min: isize, out_max: isize) -> usize {
@@ -163,10 +168,11 @@ pub enum Signal {
 }
 
 pub enum SystemMessage {
+    Log(String),
     LoopSpeed(Duration),
     // Audio.
-    AudioSelected(Option<SerialPortInfo>),
-    AudioDevicesView(Vec<SerialPortInfo>),
+    AudioSelected(Option<Device>),
+    AudioDevicesView(Vec<(HostId, Device)>),
     // Serial.
     SerialSelected(Option<SerialPortInfo>),
     SerialDevicesView(Vec<SerialPortInfo>),
@@ -212,12 +218,22 @@ macro_rules! shift_push {
     };
 }
 
+#[non_exhaustive]
+pub struct AudioThreadControlSignal;
+
+impl AudioThreadControlSignal {
+    pub const CONTINUE: u8 = 0;
+    pub const ABORT: u8 = 1;
+    pub const DEAD: u8 = 2;
+}
+
 pub fn run(
-    // device: Device,
+    device: Device,
     signal_out_0: Sender<Signal>,
     // signal_out_1: Sender<Signal>,
     system_out: Sender<SystemMessage>,
-) {
+    thread_control_signal: Arc<AtomicU8>,
+) -> anyhow::Result<()> {
     let config = Config::default();
 
     // TODO: select a device!
@@ -230,26 +246,26 @@ pub fn run(
         max_buffer_size: CaptureConfig::default().max_buffer_size,
     };
 
-    let capture = Capture::init(audio_capture_config.clone()).unwrap();
+    let capture = Capture::init(audio_capture_config.clone()).map_err(|err| anyhow!("{err:?}"))?;
 
-    println!("Selected capture device: {:?}", audio_capture_config.device);
-    let dev = utils::device_from_name(audio_capture_config.device).unwrap();
+    // println!("Selected capture device: {:?}", audio_capture_config.device);
+    // let dev = utils::device_from_name(audio_capture_config.device).unwrap();
 
     // TODO: beat detection is cooked.
     // Beat detection
-    let s0 = signal_out_0.clone();
-    let handle = recording::start_detector_thread(
-        move |info| {
-            println!("beat: {info:?}");
-            s0.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
-                .unwrap();
-        },
-        Some(dev),
-    )
-    .unwrap();
+    // let s0 = signal_out_0.clone();
+    // let handle = recording::start_detector_thread(
+    //     move |info| {
+    //         println!("beat: {info:?}");
+    //         s0.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
+    //             .unwrap();
+    //     },
+    //     Some(dev),
+    // )
+    // .unwrap();
     // End beat detection
 
-    let converter: Converter = match config.visualisation {
+    let mut converter: Converter = match config.visualisation {
         Visualisation::Spectrum => {
             let stream = Stream::init_with_capture(&capture, config.audio.clone());
 
@@ -281,7 +297,7 @@ pub fn run(
     //
     // DMX interfaces.
     //
-    let ports = serialport::available_ports().unwrap();
+    let ports = serialport::available_ports()?;
 
     // Update available ports to frontend.
     system_out
@@ -290,7 +306,7 @@ pub fn run(
 
     println!("{ports:?}");
 
-    let mut serial_port = ports.into_iter().find(|p| match p.port_type.clone() {
+    let serial_port = ports.into_iter().find(|p| match p.port_type.clone() {
         SerialPortType::UsbPort(usb) => USB_DEVICES
             .iter()
             .any(|d| d.pid == usb.pid && d.vid == usb.vid),
@@ -349,6 +365,14 @@ pub fn run(
     //
 
     loop {
+        //
+        // Loop control.
+        //
+        if thread_control_signal.load(Ordering::Relaxed) == AudioThreadControlSignal::ABORT {
+            println!("Received kill, giving up...");
+            break Ok(());
+        }
+
         //
         // Measure loop speed.
         //
@@ -502,10 +526,4 @@ pub fn run(
             );
         }
     }
-}
-
-pub fn foo() {
-    // let (sender, receiver) = mpsc::channel();
-
-    run(converter, signal_out_0, system_out);
 }
