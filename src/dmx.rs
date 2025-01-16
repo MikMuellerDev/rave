@@ -1,4 +1,5 @@
 use std::{
+    net::UdpSocket,
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
@@ -40,10 +41,50 @@ impl DmxUniverse {
     }
 }
 
+enum Color {
+    Red,
+    Purple,
+    Blue,
+    Cyan,
+    Green,
+    Yellow,
+}
+
+impl Color {
+    fn from_index(index: u8) -> Self {
+        match index {
+            0 => Self::Red,
+            1 => Self::Purple,
+            2 => Self::Blue,
+            3 => Self::Cyan,
+            4 => Self::Green,
+            5 => Color::Yellow,
+            _ => unreachable!(),
+        }
+    }
+
+    fn channels(&self) -> [u8; 3] {
+        match self {
+            Color::Red => [255, 0, 0],
+            Color::Purple => [255, 0, 255],
+            Color::Blue => [0, 0, 255],
+            Color::Cyan => [0, 255, 255],
+            Color::Green => [0, 255, 0],
+            Color::Yellow => [255, 255, 0],
+        }
+    }
+}
+
 struct DmxUniverseReal {
     serial: Box<dyn SerialPort>,
     channels: [u8; 513],
     last_update: Instant,
+
+    color_idx: u8,
+    color_set_time: Instant,
+    // start_of_drop: Instant,
+    // bass_count: usize,
+    //socket: UdpSocket,
 }
 
 impl DmxUniverseReal {
@@ -60,6 +101,8 @@ impl DmxUniverseReal {
             serial: port,
             channels: [0; 513],
             last_update: Instant::now(),
+            color_idx: 0,
+            color_set_time: Instant::now(),
         }
     }
 
@@ -71,10 +114,21 @@ impl DmxUniverseReal {
                 if volume >= 1 {
                     println!("V={volume}");
                     // self.channels[1] = volume / 10;
+
+                    if self.color_set_time.elapsed().as_secs() > 10 {
+                        self.color_set_time = Instant::now();
+                        if self.color_idx == 5 {
+                            self.color_idx = 0;
+                        } else {
+                            self.color_idx += 1;
+                        }
+                    }
+
+                    let c = Color::from_index(self.color_idx).channels();
                     self.channels[1] = 255;
-                    self.channels[2] = 255;
-                    self.channels[3] = 0;
-                    self.channels[4] = 0;
+                    self.channels[2] = c[0];
+                    self.channels[3] = c[1];
+                    self.channels[4] = c[2];
                     self.write_to_serial();
                 } else {
                     self.channels[1] = 0;

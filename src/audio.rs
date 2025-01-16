@@ -1,12 +1,13 @@
 use std::{
     borrow::Cow,
-    collections::VecDeque,
+    collections::{vec_deque, VecDeque},
+    net::UdpSocket,
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
     },
     thread,
-    time::{self, Duration},
+    time::{self, Duration, Instant},
     u8,
 };
 
@@ -358,11 +359,17 @@ pub fn run(
     let mut long_historic = VecDeque::with_capacity(long_historic_frames);
     let mut historic = VecDeque::with_capacity(rolling_average_frames);
 
+    const BASS_FRAMES: usize = 800;
+    let mut bass_samples = VecDeque::with_capacity(BASS_FRAMES);
+    let mut last_bass_udp_update = Instant::now();
+
     //
     //
     // TODO: beat detection
     //
     //
+    //
+    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
 
     loop {
         //
@@ -443,8 +450,35 @@ pub fn run(
                     .collect::<Vec<usize>>();
 
                 let avg = v.iter().sum::<usize>() as f32 / v.len() as f32;
+                let sig = (avg * 10.0) as u8;
 
-                Signal::Bass((avg * 10.0) as u8)
+                bass_samples.push_back(sig);
+
+                if bass_samples.len() >= BASS_FRAMES {
+                    bass_samples.pop_front();
+                }
+
+                // Drop detection.
+                let len = bass_samples.len();
+                let drop = bass_samples.iter().filter(|b| **b > 20).count() >= len / 3;
+
+                if last_bass_udp_update.elapsed().as_millis() >= 1000 {
+                    last_bass_udp_update = Instant::now();
+                    println!("drop={drop}");
+                    socket
+                        .send_to(
+                            &[b'D', if drop { b'1' } else { b'0' }],
+                            "192.168.0.100:33333",
+                        )
+                        .unwrap_or_else(|err| {
+                            println!("error UDP: {:?}", err);
+                            0
+                        });
+
+                }
+
+
+                Signal::Bass(if drop { 0 } else { sig })
             }
         );
 

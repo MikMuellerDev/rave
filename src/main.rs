@@ -8,7 +8,9 @@ use blaulicht::dmx;
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
-    use std::{sync::{atomic::AtomicU8, mpsc, Arc}, thread};
+    use std::{
+        net::UdpSocket, sync::{atomic::AtomicU8, mpsc, Arc}, thread
+    };
 
     use anyhow::bail;
     use blaulicht::{app, config};
@@ -66,6 +68,22 @@ fn main() -> anyhow::Result<()> {
     // thread::spawn(move || {
     //     dmx::dmx_thread(dmx_control_receiver, dmx_signal_receiver, system_out)
     // });
+    // }
+
+    // {
+    //     let socket = UdpSocket::bind("0.0.0.0:5005")?;
+    //
+    //     // Receives a single datagram message on the socket. If `buf` is too small to hold
+    //     // the message, it will be cut off.
+    //     let mut buf = [0; 10];
+    //     let (amt, src) = socket.recv_from(&mut buf)?;
+    //
+    //     audio_thread_control_signal.store(, Ordering::Relaxed);
+    //
+    //     // Redeclare `buf` as slice of the received data and send reverse data back to origin.
+    //     // let buf = &mut buf[..amt];
+    //     // buf.reverse();
+    //     // socket.send_to(buf, &src)?;
     // }
 
     let native_options = eframe::NativeOptions {
