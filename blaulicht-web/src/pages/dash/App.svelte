@@ -4,7 +4,7 @@
     import { loading } from '../../global'
     import { Button, Folder, List, Monitor, ThemeUtils, type ListOptions } from 'svelte-tweakpane-ui';
     import { Binding, type BindingObject } from 'svelte-tweakpane-ui';
-    import { BlaulichtWebsocket, BlaulichtWebsocketCallbacks, topicAudioDevicesView, topicHeartbeat } from '../../lib/websocket';
+    import { BlaulichtWebsocket, BlaulichtWebsocketCallbacks, topicAudioDevicesView, topicHeartbeat, topicSelectAudioDevice } from '../../lib/websocket';
     import { WaveformMonitor } from 'svelte-tweakpane-ui';
 
     async function loadAvailableAudioDevices(): Promise<String[]> {
@@ -58,6 +58,16 @@
             }
 
             audioPortListOptions = audioPortListOptionsTemp
+        })
+
+        callbacks.subscribe(topicSelectAudioDevice(), (event) => {
+            const dev = event.value
+            console.log(`Selected audio device: ${dev}`)
+            selectedAudio = dev
+        })
+
+        callbacks.subscribe(topicVolume(), (event) => {
+            console.log(`Volume: ${event.value}`)
         })
 
         socket = new BlaulichtWebsocket(callbacks)

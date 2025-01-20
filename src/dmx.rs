@@ -142,20 +142,20 @@ impl DmxUniverseReal {
 
                 // spin_sleep::sleep(Duration::from_millis(10));
             }
-            Signal::BeatAlgo(_) => {
-                // return;
-                self.channels[1] = 255;
-                self.channels[2] = 255;
-                self.channels[3] = 255;
-                self.channels[4] = 255;
-
-                self.write_to_serial();
-                spin_sleep::sleep(Duration::from_millis(10));
-
-                self.channels[1] = 0;
-
-                self.write_to_serial();
-            }
+            // Signal::BeatAlgo(_) => {
+            //     // return;
+            //     self.channels[1] = 255;
+            //     self.channels[2] = 255;
+            //     self.channels[3] = 255;
+            //     self.channels[4] = 255;
+            //
+            //     self.write_to_serial();
+            //     spin_sleep::sleep(Duration::from_millis(10));
+            //
+            //     self.channels[1] = 0;
+            //
+            //     self.write_to_serial();
+            // }
             Signal::Bass(v) => {
                 if v > 20 && self.last_update.elapsed().as_millis() > 100 {
                     const CHANNEL_OFFSET_STROBE: usize = 10;

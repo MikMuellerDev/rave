@@ -162,7 +162,6 @@ impl Converter {
 #[derive(Clone, Copy, Serialize, Debug)]
 pub enum Signal {
     BeatVolume(u8),
-    BeatAlgo(u8),
     Bass(u8),
     Volume(u8),
 }

@@ -10,7 +10,9 @@ export enum TopicKind {
   BPM = 'bpm',
   DMX = 'dmx',
   Heartbeat = 'Heartbeat',
-  AudioDevicesView = 'AudioDevicesView'
+  AudioDevicesView = 'AudioDevicesView',
+  AudioDeviceSelected  = 'SelectAudioDevice',
+  Volume  = 'Volume',
 }
 
 //
@@ -49,6 +51,14 @@ export function topicAudioDevicesView(): Topic<TopicKind.AudioDevicesView> {
   return { kind: TopicKind.AudioDevicesView };
 }
 
+export function topicSelectAudioDevice(): Topic<TopicKind.AudioDeviceSelected> {
+  return { kind: TopicKind.AudioDeviceSelected };
+}
+
+export function topicVolume(): Topic<TopicKind.Volume> {
+  return { kind: TopicKind.Volume };
+}
+
 export type UpdateMessage<T> = T extends TopicKind.BPM
   ? { kind: Topic<T>; value: BPMData }
   : T extends TopicKind.DMX
@@ -57,6 +67,10 @@ export type UpdateMessage<T> = T extends TopicKind.BPM
     ? { kind: Topic<T>; value: number }
   : T extends TopicKind.AudioDevicesView
     ? { kind: Topic<T>; value: string[] }
+  : T extends TopicKind.AudioDeviceSelected
+    ? { kind: Topic<T>; value: string }
+  : T extends TopicKind.Volume
+    ? { kind: Topic<T>; value: number }
       : never;
 
 type OnMessageCallBack<T extends TopicKind> = (data: UpdateMessage<T>) => void;

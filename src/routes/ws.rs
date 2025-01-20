@@ -12,7 +12,7 @@ use cpal::traits::DeviceTrait;
 use crossbeam_channel::TryRecvError;
 use serde::{Deserialize, Serialize};
 
-use crate::{app::FromFrontend, audio::SystemMessage, utils::device_from_name};
+use crate::{app::FromFrontend, audio::{Signal, SystemMessage}, utils::device_from_name};
 
 use super::AppState;
 
@@ -71,7 +71,49 @@ impl From<WSFromFrontend> for FromFrontend {
 }
 
 //
-// To frontent message,
+// To frontend signal.
+//
+
+#[derive(Serialize)]
+pub enum WSSignalKind {
+    BeatVolume,
+    Bass,
+    Volume,
+}
+
+#[derive(Serialize)]
+pub struct WSSignal {
+    kind: WSSignalKind,
+    value: u8,
+}
+
+impl From<Signal> for WSSignal   {
+    fn from(value: Signal) -> Self {
+        match value {
+            Signal::BeatVolume(value) => {
+                Self {
+                    kind: WSSignalKind::BeatVolume,
+                    value,
+                }
+            },
+            Signal::Bass(value) => {
+                Self {
+                    kind: WSSignalKind::Bass,
+                    value,
+                }
+            },
+            Signal::Volume(value) => {
+                Self {
+                    kind: WSSignalKind::Volume,
+                    value,
+                }
+            },
+        }
+    }
+}
+
+//
+// To frontent message.
 //
 
 #[derive(Serialize)]
@@ -231,7 +273,8 @@ pub async fn ws_handler(
         match data2.app_signal_receiver.try_recv() {
             Ok(signal) => {
                 println!("app signal: ${signal:?}");
-                session2.text(serde_json::to_string(&signal).unwrap()).await.unwrap();
+                let ws_signal = WSSignal::from(signal);
+                session2.text(serde_json::to_string(&ws_signal).unwrap()).await.unwrap();
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => unreachable!(),
