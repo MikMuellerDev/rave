@@ -2,7 +2,16 @@
 
 pub mod app;
 pub mod audio;
-pub mod dmx;
-pub mod utils;
 pub mod config;
-pub use app::BlaulichtApp;
+pub mod dmx;
+pub mod routes;
+pub mod utils;
+
+pub struct DmxData {
+    channels: [u8; 512],
+}
+
+pub enum ToFrontent {
+    Dmx(DmxData),
+    Bpm(u16),
+}

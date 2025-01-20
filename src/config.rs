@@ -10,12 +10,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
+    pub port: u16,
     pub extra_serial_paths: Vec<PathBuf>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            port: 1234,
             extra_serial_paths: vec!["/dev/pts/0".into()],
         }
     }

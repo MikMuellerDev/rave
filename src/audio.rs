@@ -1,6 +1,5 @@
 use std::{
-    borrow::Cow,
-    collections::{vec_deque, VecDeque},
+    collections::VecDeque,
     net::UdpSocket,
     sync::{
         atomic::{AtomicU8, Ordering},
@@ -20,15 +19,15 @@ use audioviz::{
         Frequency,
     },
 };
-use beat_detector::recording;
-use cpal::{traits::DeviceTrait, BufferSize, Device, HostId};
+use cpal::{traits::DeviceTrait, Device, HostId};
 use crossbeam_channel::Sender;
 use log::{debug, info, warn};
+use serde::Serialize;
 use serialport::{SerialPortInfo, SerialPortType};
 
 use crate::{
     dmx::{DmxUniverse, USB_DEVICES},
-    utils::{self},
+    DmxData, ToFrontent,
 };
 
 fn map(x: isize, in_min: isize, in_max: isize, out_min: isize, out_max: isize) -> usize {
@@ -160,7 +159,7 @@ impl Converter {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Debug)]
 pub enum Signal {
     BeatVolume(u8),
     BeatAlgo(u8),
@@ -169,6 +168,7 @@ pub enum Signal {
 }
 
 pub enum SystemMessage {
+    Heartbeat(usize),
     Log(String),
     LoopSpeed(Duration),
     // Audio.
@@ -234,6 +234,7 @@ pub fn run(
     // signal_out_1: Sender<Signal>,
     system_out: Sender<SystemMessage>,
     thread_control_signal: Arc<AtomicU8>,
+    // to_frontend_sender: Sender<ToFrontent>,
 ) -> anyhow::Result<()> {
     let config = Config::default();
 
@@ -249,23 +250,6 @@ pub fn run(
 
     let capture = Capture::init(audio_capture_config.clone()).map_err(|err| anyhow!("{err:?}"))?;
 
-    // println!("Selected capture device: {:?}", audio_capture_config.device);
-    // let dev = utils::device_from_name(audio_capture_config.device).unwrap();
-
-    // TODO: beat detection is cooked.
-    // Beat detection
-    // let s0 = signal_out_0.clone();
-    // let handle = recording::start_detector_thread(
-    //     move |info| {
-    //         println!("beat: {info:?}");
-    //         s0.send(Signal::BeatAlgo(info.duration().as_millis() as u8))
-    //             .unwrap();
-    //     },
-    //     Some(dev),
-    // )
-    // .unwrap();
-    // End beat detection
-
     let mut converter: Converter = match config.visualisation {
         Visualisation::Spectrum => {
             let stream = Stream::init_with_capture(&capture, config.audio.clone());
@@ -274,9 +258,6 @@ pub fn run(
         }
         Visualisation::Scope => Converter::from_capture(capture, config.clone()),
     };
-
-    // let (signal_out, signal_receiver) = mpsc::channel();
-    // let (system_out, system_receiver) = mpsc::channel();
 
     //
     //
@@ -325,19 +306,10 @@ pub fn run(
             system_out
                 .send(SystemMessage::SerialSelected(Some(port.clone())))
                 .unwrap();
-            DmxUniverse::new(serial_port_name)
+            DmxUniverse::new(serial_port_name, signal_out_0.clone())
         }
         None => DmxUniverse::new_dummy(),
     };
-
-    // let Some(port) = port.cloned() else {
-    //     warn!("[DMX] No default serial device available...");
-    //     system_out
-    //         .send(SystemMessage::SerialSelected(None))
-    //         .unwrap();
-    // };
-
-    // let mut port = Some(port);
 
     // Energy saving.
     let mut loop_inactive = true;
@@ -414,7 +386,8 @@ pub fn run(
                         / (volume_samples.len() as f32)
                         * 10.0) as usize;
 
-                    Signal::Volume((volume_mean as u8).saturating_mul(10u8))
+                    let volume = (volume_mean as u8).saturating_mul(10u8);
+                    Signal::Volume(volume)
                 }
             );
 
@@ -474,9 +447,7 @@ pub fn run(
                             println!("error UDP: {:?}", err);
                             0
                         });
-
                 }
-
 
                 Signal::Bass(if drop { 0 } else { sig })
             }

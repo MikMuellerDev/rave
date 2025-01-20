@@ -1,50 +1,95 @@
-#![warn(clippy::all, rust_2018_idioms)]
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-                                                                   //
-use anyhow::anyhow;
+use std::sync::atomic::AtomicU8;
+use std::sync::Arc;
+use std::thread;
+
+use actix_files::Files;
+use actix_web::web::{self, Data};
+use actix_web::{App, HttpServer};
+use anyhow::{anyhow, Context};
 use blaulicht::audio::AudioThreadControlSignal;
-use blaulicht::dmx;
+use blaulicht::routes::{AppState};
+use blaulicht::{config, dmx, routes};
+use env_logger::Env;
+use log::info;
 
-// When compiling natively:
-#[cfg(not(target_arch = "wasm32"))]
-fn main() -> anyhow::Result<()> {
-    use std::{
-        net::UdpSocket, sync::{atomic::AtomicU8, mpsc, Arc}, thread
-    };
+// fn main() -> anyhow::Result<()> {
+//     use std::{
+//         net::UdpSocket,
+//         sync::{atomic::AtomicU8, mpsc, Arc},
+//         thread,
+//     };
+//
+//     use anyhow::bail;
+//     use blaulicht::{app, config};
+//     // Log to stderr (if you run with `RUST_LOG=debug`).
+//     use egui::TextBuffer;
+//     env_logger::init();
+//
+//     // Load config
+//     let config_path = config::config_path()?;
+//     let Some(config) = config::read_config(config_path.clone())? else {
+//         eprintln!(
+//             "Created default config file at `{}`",
+//             config_path.to_string_lossy()
+//         );
+//         return Ok(());
+//     };
+//
+//     let (from_frontend_sender, from_frontend_receiver) = crossbeam_channel::unbounded();
+//     let (app_signal_out, app_signal_receiver) = crossbeam_channel::unbounded();
+//
+//     let (system_out, _system_receiver) = crossbeam_channel::unbounded();
+//     let audio_thread_control_signal = Arc::new(AtomicU8::new(AudioThreadControlSignal::CONTINUE));
+//
+//     {
+//         // Audio recording and analysis thread.
+//         let system_out = system_out.clone();
+//         let audio_thread_control_signal = audio_thread_control_signal.clone();
+//         thread::spawn(|| {
+//             dmx::audio_thread(
+//                 from_frontend_receiver,
+//                 audio_thread_control_signal,
+//                 app_signal_out,
+//                 system_out,
+//             )
+//         });
+//     }
+//
+//     let crate_name = env!("CARGO_CRATE_NAME");
+//     let crate_version = env!("CARGO_PKG_VERSION");
+//     BlaulichtApp::new(
+//         cc,
+//         from_frontend_sender,
+//         audio_thread_control_signal,
+//         app_signal_receiver,
+//         _system_receiver,
+//         config,
+//     );
+//
+//     Ok(())
+// }
 
-    use anyhow::bail;
-    use blaulicht::{app, config};
-    // Log to stderr (if you run with `RUST_LOG=debug`).
-    use egui::TextBuffer;
-    env_logger::init();
+#[actix_web::main]
+async fn main() -> anyhow::Result<()> {
+    let config_filepath = "./config.toml";
 
-    // Load config
-    let config_path = config::config_path()?;
-    let Some(config) = config::read_config(config_path.clone())? else {
-        eprintln!(
-            "Created default config file at `{}`",
-            config_path.to_string_lossy()
-        );
+    let cfg = config::read_config(config_filepath.into())?;
+    let Some(cfg) = cfg else {
+        info!("Created default configuration file at {config_filepath}");
         return Ok(());
     };
 
-    let (from_frontend_sender, from_frontend_receiver) = crossbeam_channel::unbounded();
-    // let (signal_out, signal_receiver) = crossbeam_channel::unbounded();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    // let (dmx_signal_out, dmx_signal_receiver) = crossbeam_channel::unbounded();
+    //
+    // Audio.
+    //
+    // let (to_frontend_sender, to_frontend_receiver) = crossbeam_channel::bounded(10);
+
+    let (from_frontend_sender, from_frontend_receiver) = crossbeam_channel::unbounded();
     let (app_signal_out, app_signal_receiver) = crossbeam_channel::unbounded();
 
-    // {
-    // Fanout thread.
-    // TODO: remove this in the long run, this will add latency.
-    // thread::spawn(move || loop {
-    //     let s = signal_receiver.recv().unwrap();
-    //     dmx_signal_out.send(s).unwrap();
-    //     app_signal_out.send(s).unwrap();
-    // });
-    // }
-
-    let (system_out, _system_receiver) = crossbeam_channel::unbounded();
+    let (system_out, app_system_receiver) = crossbeam_channel::unbounded();
     let audio_thread_control_signal = Arc::new(AtomicU8::new(AudioThreadControlSignal::CONTINUE));
 
     {
@@ -57,111 +102,72 @@ fn main() -> anyhow::Result<()> {
                 audio_thread_control_signal,
                 app_signal_out,
                 system_out,
+                // to_frontend_sender,
             )
         });
     }
-
-    // let (dmx_control_sender, dmx_control_receiver) = crossbeam_channel::unbounded();
-
-    // {
-    // DMX thread.
-    // thread::spawn(move || {
-    //     dmx::dmx_thread(dmx_control_receiver, dmx_signal_receiver, system_out)
-    // });
-    // }
-
-    // {
-    //     let socket = UdpSocket::bind("0.0.0.0:5005")?;
     //
-    //     // Receives a single datagram message on the socket. If `buf` is too small to hold
-    //     // the message, it will be cut off.
-    //     let mut buf = [0; 10];
-    //     let (amt, src) = socket.recv_from(&mut buf)?;
+    // End audio.
     //
-    //     audio_thread_control_signal.store(, Ordering::Relaxed);
-    //
-    //     // Redeclare `buf` as slice of the received data and send reverse data back to origin.
-    //     // let buf = &mut buf[..amt];
-    //     // buf.reverse();
-    //     // socket.send_to(buf, &src)?;
-    // }
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([300.0, 220.0])
-            .with_icon(
-                // NOTE: Adding an icon is optional
-                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-                    .expect("Failed to load icon"),
-            ),
-        ..Default::default()
-    };
+    let data = Data::new(AppState {
+        from_frontend_sender,
+        app_signal_receiver,
+        app_system_receiver,
+    });
 
-    let crate_name = env!("CARGO_CRATE_NAME");
-    let crate_version = env!("CARGO_PKG_VERSION");
-    eframe::run_native(
-        format!("{crate_name} v{crate_version}").as_str(),
-        native_options,
-        Box::new(|cc| {
-            Ok(Box::new(blaulicht::BlaulichtApp::new(
-                cc,
-                from_frontend_sender,
-                audio_thread_control_signal,
-                app_signal_receiver,
-                _system_receiver,
-                config,
-            )))
-        }),
-    )
-    .map_err(|err| anyhow!(err.to_string()))?;
+    let server = HttpServer::new(move || {
+        App::new()
+            .app_data(data.clone())
+            .service(Files::new("/assets", "./blaulicht-web/dist/assets/"))
+            // HTML endpoints
+            .service(routes::get_index)
+            .service(routes::get_dash)
+            // .service(routes::get_login)
+            // .service(routes::get_dash)
+            // .service(routes::get_food)
+            // .service(routes::get_weight)
+            // .service(routes::get_users)
+            // API endpoints
+            .service(routes::get_bpm)
+            .service(routes::set_bpm)
+            .route("/api/ws", web::get().to(routes::ws_handler))
+        // .service(routes::logout)
+        // .service(routes::list_users)
+        // .service(routes::create_user)
+        // .service(routes::modify_other_user_data)
+        // .service(routes::delete_user)
+        // .service(routes::get_personal_data)
+        // .service(routes::modify_personal_data)
+        // .service(routes::list_food)
+        // .service(routes::list_starred_food)
+        // .service(routes::search_food)
+        // .service(routes::create_food)
+        // .service(routes::star_food)
+        // .service(routes::modify_food)
+        // .service(routes::delete_food)
+        // // weight
+        // .service(routes::list_weight_history)
+        // .service(routes::create_weight_measurement)
+        // // has eaten
+        // .service(routes::list_eaten)
+        // .service(routes::eat_create)
+        // .service(routes::modify_has_eaten)
+        // .service(routes::delete_has_eaten)
+        // // days
+        // .service(routes::get_day_history)
+    })
+    .bind(("0.0.0.0", cfg.port))
+    .with_context(|| "could not start webserver")?;
+
+    info!("Blaulicht is running on `http://localhost:{}`", cfg.port,);
+
+    server
+        .run()
+        .await
+        .with_context(|| "Could not start webserver")?;
+
+    info!("Blaulicht is shutting down...");
 
     Ok(())
-}
-
-// When compiling to web using trunk:
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    use eframe::wasm_bindgen::JsCast as _;
-
-    // Redirect `log` message to `console.log` and friends:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
-
-    let web_options = eframe::WebOptions::default();
-
-    wasm_bindgen_futures::spawn_local(async {
-        let document = web_sys::window()
-            .expect("No window")
-            .document()
-            .expect("No document");
-
-        let canvas = document
-            .get_element_by_id("the_canvas_id")
-            .expect("Failed to find the_canvas_id")
-            .dyn_into::<web_sys::HtmlCanvasElement>()
-            .expect("the_canvas_id was not a HtmlCanvasElement");
-
-        let start_result = eframe::WebRunner::new()
-            .start(
-                canvas,
-                web_options,
-                Box::new(|cc| Ok(Box::new(eframe_template::TemplateApp::new(cc)))),
-            )
-            .await;
-
-        // Remove the loading text and spinner:
-        if let Some(loading_text) = document.get_element_by_id("loading_text") {
-            match start_result {
-                Ok(_) => {
-                    loading_text.remove();
-                }
-                Err(e) => {
-                    loading_text.set_inner_html(
-                        "<p> The app has crashed. See the developer console for details. </p>",
-                    );
-                    panic!("Failed to start eframe: {e:?}");
-                }
-            }
-        }
-    });
 }

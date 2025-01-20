@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{utils::device_from_name, ToFrontent};
+
 use cpal::{traits::DeviceTrait, Device};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use log::{info, warn};
@@ -25,8 +27,8 @@ pub enum DmxUniverse {
 }
 
 impl DmxUniverse {
-    pub fn new(port_path: String) -> Self {
-        Self::Real(DmxUniverseReal::new(port_path))
+    pub fn new(port_path: String, signal_out: Sender<Signal>) -> Self {
+        Self::Real(DmxUniverseReal::new(port_path, signal_out))
     }
 
     pub fn new_dummy() -> Self {
@@ -76,6 +78,8 @@ impl Color {
 }
 
 struct DmxUniverseReal {
+    signal_out: Sender<Signal>,
+
     serial: Box<dyn SerialPort>,
     channels: [u8; 513],
     last_update: Instant,
@@ -88,7 +92,7 @@ struct DmxUniverseReal {
 }
 
 impl DmxUniverseReal {
-    fn new(port_path: String) -> Self {
+    fn new(port_path: String, signal_out: Sender<Signal>) -> Self {
         let port = serialport::new(port_path, 250000)
             .timeout(Duration::from_millis(1))
             .stop_bits(serialport::StopBits::Two)
@@ -98,6 +102,7 @@ impl DmxUniverseReal {
             .expect("Failed to open port");
 
         Self {
+            signal_out,
             serial: port,
             channels: [0; 513],
             last_update: Instant::now(),
@@ -300,6 +305,7 @@ pub fn audio_thread(
     audio_thread_control_signal: Arc<AtomicU8>,
     signal_out_0: Sender<Signal>,
     system_out: Sender<SystemMessage>,
+    // to_frontend_sender: Sender<ToFrontent>,
 ) {
     // let begin_msg = from_frontend.recv().unwrap();
     println!("[audio] Thread started!");
@@ -324,15 +330,25 @@ pub fn audio_thread(
 
     // TODO: put the DMX thread under main!
 
+    let mut seq = 0;
+
     loop {
         thread::sleep(heartbeat_delay);
         // TODO
         // window.emit("msg", ToFrontend::Heartbeat).unwrap();
 
+        system_out.send(SystemMessage::Heartbeat(seq));
+        seq += 1;
+
         match from_frontend.try_recv() {
             // Ok(FromFrontend::NewWindow(_)) => unreachable!(),
+            Ok(FromFrontend::SelectSerialDevice(dev)) => {
+                // TODO: dont do this
+            }
             Ok(FromFrontend::SelectInputDevice(dev)) => {
-                device = dev.clone();
+                println!("selected frontend input device");
+                // Get device by name.
+                device = dev;
                 device_changed = true;
             }
             Err(TryRecvError::Empty) => {}
@@ -378,6 +394,7 @@ pub fn audio_thread(
 
             let (sig_0, sys) = (signal_out_0.clone(), system_out.clone());
             {
+                // let to_frontend_sender = to_frontend_sender.clone();
                 let device = device.clone().unwrap();
                 let audio_thread_control_signal = audio_thread_control_signal.clone();
 
@@ -387,6 +404,7 @@ pub fn audio_thread(
                         sig_0,
                         sys.clone(),
                         audio_thread_control_signal.clone(),
+                        // to_frontend_sender,
                     ) {
                         // TODO: handle the audio backend error.
                         sys.send(SystemMessage::Log(format!("[audio] {err}")))

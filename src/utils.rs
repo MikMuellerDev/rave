@@ -20,7 +20,11 @@ pub fn device_from_name(dev_id: String) -> Option<Device> {
 
     let selected_device: Option<(HostId, Device)> = devices
         .into_iter()
-        .find(|(this_host, this_dev)| this_dev.name().unwrap() == dev_id);
+        .find(|(this_host, this_dev)| {
+            let this_id = this_dev.name().unwrap();
+            println!("check: {} vs {}", &this_id, &dev_id);
+            this_id == dev_id
+        });
 
     let Some((_, device)) = selected_device else {
         return None;

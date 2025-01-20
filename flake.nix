@@ -22,6 +22,10 @@
   xorg.libXcursor
   xorg.libXi
   xorg.libXrandr
+    libclang
+    clang
+            pkgs.stdenv.cc.cc.lib
+        clangStdenv
         ];
 
         packages = with pkgs; [
@@ -36,6 +40,10 @@
   xorg.libXcursor
   xorg.libXi
   xorg.libXrandr
+    libclang
+    clang
+        clangStdenv
+            pkgs.stdenv.cc.cc.lib
         ];
       in
       {
