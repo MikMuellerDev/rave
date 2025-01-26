@@ -1,27 +1,30 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    // time::Duration,
+};
 
-use actix::{Actor, StreamHandler};
+// use actix::{Actor, StreamHandler};
 use actix_web::{
-    rt,
+    rt::{self, task::yield_now},
     web::{self, Data},
     HttpRequest, HttpResponse, Result,
 };
-use actix_web_actors::ws;
+// use actix_web_actors::ws;
 use actix_ws::AggregatedMessage;
 use cpal::traits::DeviceTrait;
 use crossbeam_channel::TryRecvError;
 use serde::{Deserialize, Serialize};
 
-use crate::{app::FromFrontend, audio::{Signal, SystemMessage}, utils::device_from_name};
+use crate::{
+    app::FromFrontend,
+    audio::{Signal, SystemMessage},
+    utils::device_from_name,
+};
 
 use super::AppState;
 
-struct MyWebSocket {
-    app_state: web::Data<AppState>,
-}
-
-// impl Actor for MyWebSocket {
-//     type Context = ws::WebsocketContext<Self>;
+// struct MyWebSocket {
+//     app_state: web::Data<AppState>,
 // }
 
 //
@@ -87,26 +90,20 @@ pub struct WSSignal {
     value: u8,
 }
 
-impl From<Signal> for WSSignal   {
+impl From<Signal> for WSSignal {
     fn from(value: Signal) -> Self {
         match value {
-            Signal::BeatVolume(value) => {
-                Self {
-                    kind: WSSignalKind::BeatVolume,
-                    value,
-                }
+            Signal::BeatVolume(value) => Self {
+                kind: WSSignalKind::BeatVolume,
+                value,
             },
-            Signal::Bass(value) => {
-                Self {
-                    kind: WSSignalKind::Bass,
-                    value,
-                }
+            Signal::Bass(value) => Self {
+                kind: WSSignalKind::Bass,
+                value,
             },
-            Signal::Volume(value) => {
-                Self {
-                    kind: WSSignalKind::Volume,
-                    value,
-                }
+            Signal::Volume(value) => Self {
+                kind: WSSignalKind::Volume,
+                value,
             },
         }
     }
@@ -147,7 +144,7 @@ impl From<SystemMessage> for WSSystemMessage {
             },
             SystemMessage::LoopSpeed(duration) => Self {
                 kind: WSSystemMessageKind::LoopSpeed,
-                value: serde_json::to_value(duration.as_micros()).unwrap(),
+                value: serde_json::to_value(duration.as_micros() as u64).unwrap(),
             },
             SystemMessage::AudioSelected(device) => Self {
                 kind: WSSystemMessageKind::AudioDevicesView,
@@ -186,80 +183,14 @@ impl From<SystemMessage> for WSSystemMessage {
     }
 }
 
-// impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
-//     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-//         match msg {
-//             Ok(ws::Message::Text(text)) => {
-//                 let msg: WSFromFrontend = serde_json::from_str(text.to_string().as_str()).unwrap();
-//                 self.app_state
-//                     .from_frontend_sender
-//                     .send(msg.clone().into())
-//                     .unwrap();
-//                 println!("recv ws: {msg:?}");
-//                 // ctx.text(format!("Echo: {}", text)); // Echo the received text
-//             }
-//             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-//             Ok(ws::Message::Close(reason)) => {
-//                 ctx.close(reason);
-//                 // ctx.stop();
-//             }
-//             _ => {
-//                 match self.app_state.app_signal_receiver.try_recv() {
-//                     Ok(signal) => {
-//                         println!("app signal: ${signal:?}");
-//                         ctx.text(serde_json::to_string(&signal).unwrap());
-//                     }
-//                     Err(TryRecvError::Empty) => {}
-//                     Err(TryRecvError::Disconnected) => unreachable!(),
-//                 }
-//
-//                 match self.app_state.app_system_receiver.try_recv() {
-//                     Ok(sys) => {
-//                         ctx.text(serde_json::to_string(&WSSystemMessage::from(sys)).unwrap());
-//                     }
-//                     Err(TryRecvError::Empty) => {}
-//                     Err(TryRecvError::Disconnected) => unreachable!(),
-//                 }
-//             }
-//         }
-//     }
-// }
-
-// impl Actor for MyWebSocket {
-//     type Context = ws::WebsocketContext<Self>;
-//
-//     fn started(&mut self, ctx: &mut Self::Context) {
-//         let app_state = self.app_state.clone();
-//         let actor_addr = ctx.address(); // Clone the actor's address
-//
-//         // Spawn a periodic task to poll the channel
-//         actix::spawn(async move {
-//             let mut interval = actix::clock::interval(Duration::from_millis(50));
-//             loop {
-//                 interval.tick().await;
-//
-//                 match app_state.app_system_receiver.try_recv() {
-//                     Ok(sys) => {
-//                         let message = serde_json::to_string(&WSSystemMessage::from(sys)).unwrap();
-//                         // actor_addr.do_send(WSSendMessage(message)); // Send the message back to the actor
-//                     }
-//                     Err(TryRecvError::Empty) => {}
-//                     Err(TryRecvError::Disconnected) => {
-//                         // actor_addr.do_send(); // Notify the actor to close the WebSocket
-//                         break; // Exit the loop
-//                     }
-//                 }
-//             }
-//         });
-//     }
-// }
-
 pub async fn ws_handler(
     req: HttpRequest,
     data: Data<AppState>,
     stream: web::Payload,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (res, mut session, stream) = actix_ws::handle(&req, stream)?;
+
+    println!("Open websocket");
 
     let mut stream = stream
         .aggregate_continuations()
@@ -269,29 +200,51 @@ pub async fn ws_handler(
     let data2 = data.clone();
     let mut session2 = session.clone();
 
-    rt::spawn(async move {
-        match data2.app_signal_receiver.try_recv() {
-            Ok(signal) => {
-                println!("app signal: ${signal:?}");
-                let ws_signal = WSSignal::from(signal);
-                session2.text(serde_json::to_string(&ws_signal).unwrap()).await.unwrap();
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => unreachable!(),
-        }
+    let b = Arc::new(Mutex::new(true));
 
-        match data2.app_system_receiver.try_recv() {
-            Ok(sys) => {
-                session2.text(serde_json::to_string(&WSSystemMessage::from(sys)).unwrap()).await.unwrap();
+    let a = b.clone();
+
+    rt::spawn(async move {
+        loop {
+            {
+                if !*a.lock().unwrap() {
+                    println!("signal loop killed");
+                    break;
+                }
             }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => unreachable!(),
+
+            match data2.app_signal_receiver.try_recv() {
+                Ok(signal) => {
+                    println!("app signal: ${signal:?}");
+                    let ws_signal = WSSignal::from(signal);
+                    session2
+                        .text(serde_json::to_string(&ws_signal).unwrap())
+                        .await
+                        .unwrap();
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => unreachable!(),
+            }
+
+            match data2.app_system_receiver.try_recv() {
+                Ok(sys) => {
+                    session2
+                        .text(serde_json::to_string(&WSSystemMessage::from(sys)).unwrap())
+                        .await
+                        .unwrap();
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => unreachable!(),
+            }
+
+            yield_now().await;
         }
     });
 
     // start task but don't wait for it
     rt::spawn(async move {
         // receive messages from websocket
+        println!("waiting for message...");
         while let Some(msg) = stream.recv().await {
             match msg {
                 Ok(AggregatedMessage::Text(text)) => {
@@ -314,19 +267,22 @@ pub async fn ws_handler(
                     // respond to PING frame with PONG frame
                     session.pong(&msg).await.unwrap();
                 }
-
-                _ => {}
+                Ok(AggregatedMessage::Close(e)) => {
+                    println!("close: {e:?}");
+                    break;
+                }
+                Ok(AggregatedMessage::Pong(_)) => {},
+                Err(e) => {
+                    println!("error: {e:?}");
+                    break;
+                }
             }
         }
+
+        println!("Websocket was killed.");
+        let mut a = b.lock().unwrap();
+        *a = false;
     });
 
-    // respond immediately with response connected to WS session
     Ok(res)
 }
-
-// pub async fn websocket_handler(
-//     req: HttpRequest,
-//     app_state: web::Data<AppState>,
-//     stream: web::Payload,
-// ) -> Result<HttpResponse> {
-//     ws::start(MyWebSocket { app_state }, &req, stream) }

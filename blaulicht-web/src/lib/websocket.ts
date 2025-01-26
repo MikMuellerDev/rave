@@ -13,6 +13,9 @@ export enum TopicKind {
   AudioDevicesView = 'AudioDevicesView',
   AudioDeviceSelected  = 'SelectAudioDevice',
   Volume  = 'Volume',
+  Bass  = 'Bass',
+  BeatVolume = 'BeatVolume',
+  LoopSpeed = 'LoopSpeed'
 }
 
 //
@@ -59,6 +62,18 @@ export function topicVolume(): Topic<TopicKind.Volume> {
   return { kind: TopicKind.Volume };
 }
 
+export function topicBass(): Topic<TopicKind.Bass> {
+  return { kind: TopicKind.Bass };
+}
+
+export function topicBeatVolume(): Topic<TopicKind.BeatVolume > {
+  return { kind: TopicKind.BeatVolume };
+}
+
+export function topicLoopSpeed(): Topic<TopicKind.LoopSpeed > {
+  return { kind: TopicKind.LoopSpeed };
+}
+
 export type UpdateMessage<T> = T extends TopicKind.BPM
   ? { kind: Topic<T>; value: BPMData }
   : T extends TopicKind.DMX
@@ -70,6 +85,12 @@ export type UpdateMessage<T> = T extends TopicKind.BPM
   : T extends TopicKind.AudioDeviceSelected
     ? { kind: Topic<T>; value: string }
   : T extends TopicKind.Volume
+    ? { kind: Topic<T>; value: number }
+  : T extends TopicKind.Bass
+    ? { kind: Topic<T>; value: number }
+  : T extends TopicKind.BeatVolume
+    ? { kind: Topic<T>; value: number }
+  : T extends TopicKind.LoopSpeed
     ? { kind: Topic<T>; value: number }
       : never;
 
@@ -91,7 +112,7 @@ export class BlaulichtWebsocketCallbacks {
   }
 
   trigger(topic: string, data: any) {
-    console.dir(data)
+    // console.dir(data)
     const callback = this.callbacks.get(topic);
     if (!callback) {
       throw(`Required callback does not exist for topic ${data.kind}`)

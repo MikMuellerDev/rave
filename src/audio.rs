@@ -385,7 +385,7 @@ pub fn run(
                         / (volume_samples.len() as f32)
                         * 10.0) as usize;
 
-                    let volume = (volume_mean as u8).saturating_mul(10u8);
+                    let volume = (volume_mean as u8);
                     Signal::Volume(volume)
                 }
             );

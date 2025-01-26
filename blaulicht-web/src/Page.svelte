@@ -47,9 +47,9 @@
     //     pages = rawPages.filter(p => !p.isAdmin)
     // }
 
-    ThemeUtils.setGlobalDefaultTheme(ThemeUtils.presets.retro);
 
     onMount(async () => {
+        // ThemeUtils.setGlobalDefaultTheme(ThemeUtils.presets.retro);
         // if (shouldFetchUserData) {
         //     $loading = true
         //     await fetchUserData()
