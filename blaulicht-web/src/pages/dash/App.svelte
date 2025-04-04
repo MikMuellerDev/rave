@@ -4,18 +4,19 @@
     import { loading } from '../../global'
     import { Button, Folder, FpsGraph, List, Monitor, ThemeUtils, type ListOptions } from 'svelte-tweakpane-ui';
     import { Binding, type BindingObject } from 'svelte-tweakpane-ui';
-    import { BlaulichtWebsocket, BlaulichtWebsocketCallbacks, topicAudioDevicesView, topicBass, topicBeatVolume, topicHeartbeat, topicLoopSpeed, topicSelectAudioDevice, topicVolume } from '../../lib/websocket';
+    import { BlaulichtWebsocket, BlaulichtWebsocketCallbacks, topicAudioDevicesView, topicBass, topicBassAvg, topicBeatVolume, topicBPM, topicHeartbeat, topicLog, topicLoopSpeed, topicSelectAudioDevice, topicVolume } from '../../lib/websocket';
     import { WaveformMonitor } from 'svelte-tweakpane-ui';
+    import BpmLight from '../../components/BPMLight.svelte';
 
     async function loadAvailableAudioDevices(): Promise<String[]> {
         let res = (await fetch('/api/audio/devices')).json()
-        console.log(res)
+        // console.log(res)
         return res
     }
 
     async function loadAvailableSerialDevices(): Promise<String[]> {
         let res = (await fetch('/api/serial/devices')).json()
-        console.log(res)
+        // console.log(res)
         return res
     }
 
@@ -33,7 +34,7 @@
     // let audioDevices = [""]
 
     let audioPortListOptions: ListOptions<string> = {};
-    $: console.dir(audioPortListOptions)
+    // $: console.dir(audioPortListOptions)
     let selectedAudio = null
 
     let socket: BlaulichtWebsocket | null = null
@@ -41,6 +42,7 @@
     audioPortListOptions["None"] = "None"
 
     let bass = 0
+    let bassAvg = 0
     let beatVolume = 0
 
     onMount(async () => {
@@ -62,7 +64,23 @@
                 audioPortListOptionsTemp[dev] = dev
             }
 
+            if (JSON.stringify(audioPortListOptions) === JSON.stringify(audioPortListOptionsTemp)) {
+                // Use old state.
+                return
+            }
+
             audioPortListOptions = audioPortListOptionsTemp
+        })
+
+        callbacks.subscribe(topicLog(), (event) => {
+            const msg = event.value
+            console.log(`[LOG]: ${msg}`)
+        })
+
+        callbacks.subscribe(topicSelectAudioDevice(), (event) => {
+            const dev = event.value
+            console.log(`Selected audio device: ${dev}`)
+            selectedAudio = dev
         })
 
         callbacks.subscribe(topicSelectAudioDevice(), (event) => {
@@ -72,15 +90,20 @@
         })
 
         callbacks.subscribe(topicVolume(), (event) => {
-            console.log(`Volume: ${event.value}`)
+            // console.log(`Volume: ${event.value}`)
             // waveData.splice(0, 1)
             // waveData = [...waveData, event.value]
-            numberToMonitor = event.value
+            volume = event.value
         })
 
         callbacks.subscribe(topicBass(), (event) => {
             // console.log(`Bass: ${event.value}`)
             bass = event.value
+        })
+
+        callbacks.subscribe(topicBassAvg(), (event) => {
+            // console.log(`Bass: ${event.value}`)
+            bassAvg = event.value
         })
 
         callbacks.subscribe(topicBeatVolume(), (event) => {
@@ -91,6 +114,10 @@
         callbacks.subscribe(topicLoopSpeed(), (event) => {
             // console.log(`Beat volume: ${event.value}`)
             loopSpeed = event.value
+        })
+
+        callbacks.subscribe(topicBPM(), (event) => {
+            bpm = event.value
         })
 
         socket = new BlaulichtWebsocket(callbacks)
@@ -120,20 +147,28 @@
     })
 
     let waveData = [5, 6, 7, 8, 9, 3, 9, 8, 7, 6, 5];
-    let numberToMonitor = 85;
+    let volume = 85;
     let loopSpeed = 0;
+    let bpm = 0;
 
-    async function selectAudio(device: string) {
+    async function selectAudio(device: string | any) {
         socket.send({
             kind: "SelectAudioDevice",
             value: device,
         })
     }
 
-    async function selectSerial(device: string) {
+    async function selectSerial(device: string | any) {
         socket.send({
             kind: "SelectSerialDevice",
             value: device,
+        })
+    }
+
+    async function reloadEngine() {
+        socket.send({
+            kind: "Reload",
+            value: null,
         })
     }
 </script>
@@ -153,16 +188,18 @@
                         />
                     </div>
                     <div style="width: 10%">
+                        <span>LOOP SPEED</span>
                         <Monitor value={loopSpeed} graph={false} />
                     </div>
                 </div>
 
                 <div style="display: flex;">
                     <div style="width: 90%">
-                        <Monitor value={numberToMonitor} graph={true} max={300} theme={ThemeUtils.presets.retro} />
+                        <Monitor value={volume} graph={true} max={300} theme={ThemeUtils.presets.retro} />
                     </div>
                     <div style="width: 10%">
-                        <Monitor value={numberToMonitor} graph={false} />
+                        <span>VOLUME</span>
+                        <Monitor value={volume} graph={false} />
                     </div>
                 </div>
 
@@ -171,7 +208,18 @@
                         <Monitor value={bass} graph={true} max={300} theme={ThemeUtils.presets.retro} />
                     </div>
                     <div style="width: 10%">
+                        <span>BASS</span>
                         <Monitor value={bass} graph={false} />
+                    </div>
+                </div>
+
+                <div style="display: flex;">
+                    <div style="width: 90%">
+                        <Monitor value={bassAvg} graph={true} max={300} theme={ThemeUtils.presets.retro} />
+                    </div>
+                    <div style="width: 10%">
+                        <span>BASS AVG.</span>
+                        <Monitor value={bassAvg} graph={false} />
                     </div>
                 </div>
 
@@ -180,8 +228,25 @@
                         <Monitor value={beatVolume} graph={true} max={300} theme={ThemeUtils.presets.retro} />
                     </div>
                     <div style="width: 10%">
+                        <span>BEAT VOL.</span>
                         <Monitor value={beatVolume} graph={false} />
                     </div>
+                </div>
+
+                <div style="display: flex;">
+                    <div style="width: 90%">
+                        <Monitor value={bpm} graph={true} max={160} min={90} theme={ThemeUtils.presets.retro} />
+                    </div>
+                    <div style="width: 10%">
+                        <span>BPM</span>
+                        <Monitor value={bpm} graph={false} />
+                    </div>
+
+                    <BpmLight
+                        bpm={bpm}
+                        dimensions={80}
+                    >
+                    </BpmLight>
                 </div>
 
                 <!-- <WaveformMonitor value={waveData} min={-1} max={11} lineStyle={'bezier'} /> -->
@@ -211,6 +276,8 @@
                     />
                     <pre>Selected Option: {selectedAudio}</pre>
                 </Folder>
+
+                <Button on:click={reloadEngine} title="Reload"></Button>
             </div>
         </div>
     </div>

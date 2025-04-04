@@ -1,14 +1,15 @@
 use std::{
-    net::UdpSocket,
-    sync::{
+    mem, net::UdpSocket, sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
-    },
-    thread,
-    time::{Duration, Instant},
+    }, thread, time::{Duration, Instant}, vec
 };
 
-use crate::{utils::device_from_name, ToFrontent};
+use crate::{
+    utils::device_from_name,
+    wasm::{self, TickEngine, TickInput},
+    ToFrontent,
+};
 
 use cpal::{traits::DeviceTrait, Device};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -28,7 +29,22 @@ pub enum DmxUniverse {
 
 impl DmxUniverse {
     pub fn new(port_path: String, signal_out: Sender<Signal>) -> Self {
-        Self::Real(DmxUniverseReal::new(port_path, signal_out))
+        //
+        // WASM engine.
+        //
+
+        let mut wasm_engine = wasm::TickEngine::create().unwrap();
+        println!("FIRST TICK...");
+        wasm_engine.tick(TickInput {
+            volume: 0,
+            beat_volume: 0,
+            bass: 0,
+            bass_avg: 0,
+            bpm: 0,
+        }).unwrap();
+        println!("FIRST TICK [done].");
+
+        Self::Real(DmxUniverseReal::new(port_path, signal_out, wasm_engine))
     }
 
     pub fn new_dummy() -> Self {
@@ -39,6 +55,20 @@ impl DmxUniverse {
         match self {
             DmxUniverse::Dummy => {}
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.signal(signal),
+        }
+    }
+
+    pub fn tick(&mut self) {
+        match self {
+            DmxUniverse::Dummy => {}
+            DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.tick(),
+        }
+    }
+
+    pub fn reload(&mut self) -> wasmtime::Result<()> {
+        match self {
+            DmxUniverse::Dummy => Ok (()),
+            DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.reload(),
         }
     }
 }
@@ -78,21 +108,24 @@ impl Color {
 }
 
 struct DmxUniverseReal {
+    tick_engine: TickEngine,
+
     signal_out: Sender<Signal>,
 
     serial: Box<dyn SerialPort>,
     channels: [u8; 513],
-    last_update: Instant,
+    // last_update: Instant,
 
-    color_idx: u8,
-    color_set_time: Instant,
+    // color_idx: u8,
+    // color_set_time: Instant,
     // start_of_drop: Instant,
     // bass_count: usize,
     //socket: UdpSocket,
+    tickinput: TickInput,
 }
 
 impl DmxUniverseReal {
-    fn new(port_path: String, signal_out: Sender<Signal>) -> Self {
+    fn new(port_path: String, signal_out: Sender<Signal>, tick_engine: TickEngine) -> Self {
         let port = serialport::new(port_path, 250000)
             .timeout(Duration::from_millis(1))
             .stop_bits(serialport::StopBits::Two)
@@ -102,88 +135,130 @@ impl DmxUniverseReal {
             .expect("Failed to open port");
 
         Self {
+            tick_engine,
             signal_out,
             serial: port,
             channels: [0; 513],
-            last_update: Instant::now(),
-            color_idx: 0,
-            color_set_time: Instant::now(),
+            // last_update: Instant::now(),
+            // color_idx: 0,
+            // color_set_time: Instant::now(),
+            tickinput: TickInput {
+                volume: 0,
+                beat_volume: 0,
+                bass: 0,
+                bass_avg: 0,
+                bpm: 0,
+            },
         }
     }
 
+    fn reload(&mut self) -> wasmtime::Result<()> {
+        self.tick_engine.reload()
+    }
+
     fn signal(&mut self, signal: Signal) {
+        let start = Instant::now();
         match signal {
-            Signal::BeatVolume(volume) => {
-                // TODO: engine here
-                // return;
-                if volume >= 1 {
-                    println!("V={volume}");
-                    // self.channels[1] = volume / 10;
-
-                    if self.color_set_time.elapsed().as_secs() > 10 {
-                        self.color_set_time = Instant::now();
-                        if self.color_idx == 5 {
-                            self.color_idx = 0;
-                        } else {
-                            self.color_idx += 1;
-                        }
-                    }
-
-                    let c = Color::from_index(self.color_idx).channels();
-                    self.channels[1] = 255;
-                    self.channels[2] = c[0];
-                    self.channels[3] = c[1];
-                    self.channels[4] = c[2];
-                    self.write_to_serial();
-                } else {
-                    self.channels[1] = 0;
-                    self.write_to_serial();
-                }
-
-                // spin_sleep::sleep(Duration::from_millis(10));
-            }
-            // Signal::BeatAlgo(_) => {
-            //     // return;
-            //     self.channels[1] = 255;
-            //     self.channels[2] = 255;
-            //     self.channels[3] = 255;
-            //     self.channels[4] = 255;
-            //
-            //     self.write_to_serial();
-            //     spin_sleep::sleep(Duration::from_millis(10));
-            //
-            //     self.channels[1] = 0;
-            //
-            //     self.write_to_serial();
-            // }
-            Signal::Bass(v) => {
-                if v > 20 && self.last_update.elapsed().as_millis() > 100 {
-                    const CHANNEL_OFFSET_STROBE: usize = 10;
-
-                    self.last_update = Instant::now();
-                    self.channels[1 + CHANNEL_OFFSET_STROBE - 1] = 255;
-                    self.channels[2 + CHANNEL_OFFSET_STROBE - 1] = 255;
-                    self.channels[3 + CHANNEL_OFFSET_STROBE - 1] = 255;
-                    self.channels[4 + CHANNEL_OFFSET_STROBE - 1] = 255;
-                    self.write_to_serial();
-                    spin_sleep::sleep(Duration::from_millis(1));
-
-                    self.channels[1 + CHANNEL_OFFSET_STROBE - 1] = 0;
-
-                    self.write_to_serial();
-                }
-            }
             Signal::Volume(v) => {
-                if v < 10 {
-                    self.channels[1] = 30;
-                    self.channels[2] = 255;
-                    self.channels[3] = 0;
-                    self.channels[4] = 255;
-
-                    self.write_to_serial();
-                }
+                self.tickinput.volume = v;
             }
+            Signal::BeatVolume(v) => {
+                self.tickinput.beat_volume = v;
+            }
+            Signal::Bass(v) => {
+                self.tickinput.bass = v;
+            }
+            Signal::BassAvg(v) => {
+                self.tickinput.bass_avg = v;
+            }
+            Signal::Bpm(v) => {
+                self.tickinput.bpm = v;
+            } // Signal::BeatVolume(volume) => {
+              //     // TODO: engine here
+              //     // return;
+              //     if volume >= 1 {
+              //         println!("V={volume}");
+              //         // self.channels[1] = volume / 10;
+
+              //         if self.color_set_time.elapsed().as_secs() > 10 {
+              //             self.color_set_time = Instant::now();
+              //             if self.color_idx == 5 {
+              //                 self.color_idx = 0;
+              //             } else {
+              //                 self.color_idx += 1;
+              //             }
+              //         }
+
+              //         let c = Color::from_index(self.color_idx).channels();
+              //         self.channels[1] = 255;
+              //         self.channels[2] = c[0];
+              //         self.channels[3] = c[1];
+              //         self.channels[4] = c[2];
+              //         self.write_to_serial();
+              //     } else {
+              //         self.channels[1] = 0;
+              //         self.write_to_serial();
+              //     }
+
+              //     // spin_sleep::sleep(Duration::from_millis(10));
+              // }
+              // // Signal::BeatAlgo(_) => {
+              // //     // return;
+              // //     self.channels[1] = 255;
+              // //     self.channels[2] = 255;
+              // //     self.channels[3] = 255;
+              // //     self.channels[4] = 255;
+              // //
+              // //     self.write_to_serial();
+              // //     spin_sleep::sleep(Duration::from_millis(10));
+              // //
+              // //     self.channels[1] = 0;
+              // //
+              // //     self.write_to_serial();
+              // // }
+              // Signal::Bass(v) => {
+              //     if v > 20 && self.last_update.elapsed().as_millis() > 100 {
+              //         const CHANNEL_OFFSET_STROBE: usize = 10;
+
+              //         self.last_update = Instant::now();
+              //         self.channels[1 + CHANNEL_OFFSET_STROBE - 1] = 255;
+              //         self.channels[2 + CHANNEL_OFFSET_STROBE - 1] = 255;
+              //         self.channels[3 + CHANNEL_OFFSET_STROBE - 1] = 255;
+              //         self.channels[4 + CHANNEL_OFFSET_STROBE - 1] = 255;
+              //         self.write_to_serial();
+              //         spin_sleep::sleep(Duration::from_millis(1));
+
+              //         self.channels[1 + CHANNEL_OFFSET_STROBE - 1] = 0;
+
+              //         self.write_to_serial();
+              //     }
+              // }
+              // Signal::Volume(v) => {
+              //     if v < 10 {
+              //         self.channels[1] = 30;
+              //         self.channels[2] = 255;
+              //         self.channels[3] = 0;
+              //         self.channels[4] = 255;
+
+              //         self.write_to_serial();
+              //     }
+              // }
+              // Signal::Bpm(_) => {}
         }
+    }
+
+    pub fn tick(&mut self) {
+        let start = Instant::now();
+        let channels = self.tick_engine.tick(self.tickinput).unwrap();
+        for (index, value) in channels.iter().enumerate() {
+            self.channels[index] = *value as u8;
+        }
+
+       // println!("DMX processing: {} micros", Instant::now().duration_since(start).as_micros());
+
+        let start = Instant::now();
+        self.write_to_serial();
+        // println!("DMX write: {}", start.elapsed().as_micros())
     }
 
     fn send_break(&self, duration: Duration) {
@@ -319,7 +394,7 @@ pub fn audio_thread(
     // let step = 25;
     let heartbeat_delay = Duration::from_millis(1000);
 
-    let mut device: Option<Device> = None;
+    let mut audio_device: Option<Device> = None;
     let mut device_changed = false;
 
     // From audio to frontend.
@@ -337,18 +412,31 @@ pub fn audio_thread(
         // TODO
         // window.emit("msg", ToFrontend::Heartbeat).unwrap();
 
-        system_out.send(SystemMessage::Heartbeat(seq));
+        system_out.send(SystemMessage::Heartbeat(seq)).unwrap();
         seq += 1;
 
         match from_frontend.try_recv() {
+            Ok(FromFrontend::Reload) => {
+                audio_thread_control_signal.store(AudioThreadControlSignal::RELOAD, Ordering::Relaxed);
+                // while (audio_thread_control_signal.load(Ordering::Relaxed) != AudioThreadControlSignal::DEAD) {
+                //     println!("waiting for audio thread to die...");
+                //     thread::sleep(Duration::from_millis(500));
+                // }
+
+                // println!("Audio thread died.");
+                // device_changed = true;
+            }
             // Ok(FromFrontend::NewWindow(_)) => unreachable!(),
             Ok(FromFrontend::SelectSerialDevice(dev)) => {
                 // TODO: dont do this
+
+                println!("selected frontend serial device");
+                // Get device by name.
             }
             Ok(FromFrontend::SelectInputDevice(dev)) => {
                 println!("selected frontend input device");
                 // Get device by name.
-                device = dev;
+                audio_device = dev;
                 device_changed = true;
             }
             Err(TryRecvError::Empty) => {}
@@ -357,7 +445,7 @@ pub fn audio_thread(
             }
         };
 
-        if device.is_none() {
+        if audio_device.is_none() {
             let devices = utils::get_input_devices_flat();
             system_out
                 .send(SystemMessage::AudioDevicesView(devices))
@@ -389,18 +477,19 @@ pub fn audio_thread(
             //     .unwrap();
         } else if device_changed {
             system_out
-                .send(SystemMessage::AudioSelected(device.clone()))
+                .send(SystemMessage::AudioSelected(audio_device.clone()))
                 .unwrap();
 
             let (sig_0, sys) = (signal_out_0.clone(), system_out.clone());
             {
                 // let to_frontend_sender = to_frontend_sender.clone();
-                let device = device.clone().unwrap();
+                let audio_input_device = audio_device.clone().unwrap();
                 let audio_thread_control_signal = audio_thread_control_signal.clone();
 
+                let sys = sys.clone();
                 thread::spawn(move || {
                     if let Err(err) = audio::run(
-                        device,
+                        audio_input_device,
                         sig_0,
                         sys.clone(),
                         audio_thread_control_signal.clone(),
@@ -410,6 +499,10 @@ pub fn audio_thread(
                         sys.send(SystemMessage::Log(format!("[audio] {err}")))
                             .unwrap();
                     }
+
+                    sys.send(SystemMessage::Log("[audio] Thread died.".into()))
+                        .unwrap();
+
                     audio_thread_control_signal
                         .store(AudioThreadControlSignal::DEAD, Ordering::Relaxed);
                 });
@@ -418,8 +511,11 @@ pub fn audio_thread(
             device_changed = false;
             println!(
                 "Started audio detector thread: {}...",
-                device.clone().unwrap().name().unwrap()
+                audio_device.clone().unwrap().name().unwrap()
             );
+
+            sys.send(SystemMessage::Log(format!("[audio] Thread started.")))
+                .unwrap();
         }
     }
 }

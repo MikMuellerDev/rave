@@ -7,7 +7,6 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
-    "prepare": "smui-theme compile public/assets/theme.css -i src/theme",
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "devDependencies": {

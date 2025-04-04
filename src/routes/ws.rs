@@ -35,6 +35,7 @@ use super::AppState;
 pub enum WSFromFrontendKind {
     SelectAudioDevice,
     SelectSerialDevice,
+    Reload,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -47,6 +48,7 @@ pub struct WSFromFrontend {
 impl From<WSFromFrontend> for FromFrontend {
     fn from(value: WSFromFrontend) -> Self {
         match value.kind {
+            WSFromFrontendKind::Reload => Self::Reload,
             WSFromFrontendKind::SelectAudioDevice => {
                 if value.value == serde_json::Value::Null {
                     Self::SelectInputDevice(None)
@@ -79,8 +81,10 @@ impl From<WSFromFrontend> for FromFrontend {
 
 #[derive(Serialize)]
 pub enum WSSignalKind {
+    Bpm,
     BeatVolume,
     Bass,
+    BassAvg,
     Volume,
 }
 
@@ -93,12 +97,20 @@ pub struct WSSignal {
 impl From<Signal> for WSSignal {
     fn from(value: Signal) -> Self {
         match value {
+            Signal::Bpm(value) => Self {
+                kind: WSSignalKind::Bpm,
+                value,
+            },
             Signal::BeatVolume(value) => Self {
                 kind: WSSignalKind::BeatVolume,
                 value,
             },
             Signal::Bass(value) => Self {
                 kind: WSSignalKind::Bass,
+                value,
+            },
+            Signal::BassAvg(value) => Self {
+                kind: WSSignalKind::BassAvg,
                 value,
             },
             Signal::Volume(value) => Self {
@@ -139,7 +151,7 @@ impl From<SystemMessage> for WSSystemMessage {
                 value: serde_json::to_value(seq).unwrap(),
             },
             SystemMessage::Log(msg) => Self {
-                kind: WSSystemMessageKind::LoopSpeed,
+                kind: WSSystemMessageKind::Log,
                 value: serde_json::to_value(msg).unwrap(),
             },
             SystemMessage::LoopSpeed(duration) => Self {
@@ -215,7 +227,7 @@ pub async fn ws_handler(
 
             match data2.app_signal_receiver.try_recv() {
                 Ok(signal) => {
-                    println!("app signal: ${signal:?}");
+                    // println!("app signal: ${signal:?}");
                     let ws_signal = WSSignal::from(signal);
                     session2
                         .text(serde_json::to_string(&ws_signal).unwrap())

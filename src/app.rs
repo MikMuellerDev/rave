@@ -3,6 +3,7 @@ use serde::Deserialize;
 
 #[derive(Clone)]
 pub enum FromFrontend {
+    Reload,
     SelectInputDevice(Option<Device>),
     SelectSerialDevice(Option<String>),
 }

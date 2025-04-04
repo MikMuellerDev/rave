@@ -4,16 +4,18 @@
 
 const WS_PATH = "api/ws"
 
-import type { BPMData, DMXData } from "./types";
+import type { DMXData } from "./types";
 
 export enum TopicKind {
-  BPM = 'bpm',
+  BPM = 'Bpm',
   DMX = 'dmx',
   Heartbeat = 'Heartbeat',
   AudioDevicesView = 'AudioDevicesView',
   AudioDeviceSelected  = 'SelectAudioDevice',
+  Log  = 'Log',
   Volume  = 'Volume',
   Bass  = 'Bass',
+  BassAvg  = 'BassAvg',
   BeatVolume = 'BeatVolume',
   LoopSpeed = 'LoopSpeed'
 }
@@ -23,7 +25,7 @@ export enum TopicKind {
 //
 
 export interface SendEvent {
-    kind: "SelectAudioDevice" | "SelectSerialDevice",
+    kind: "SelectAudioDevice" | "SelectSerialDevice" | "Reload",
     value: any
 }
 
@@ -58,12 +60,20 @@ export function topicSelectAudioDevice(): Topic<TopicKind.AudioDeviceSelected> {
   return { kind: TopicKind.AudioDeviceSelected };
 }
 
+export function topicLog(): Topic<TopicKind.Log> {
+  return { kind: TopicKind.Log };
+}
+
 export function topicVolume(): Topic<TopicKind.Volume> {
   return { kind: TopicKind.Volume };
 }
 
 export function topicBass(): Topic<TopicKind.Bass> {
   return { kind: TopicKind.Bass };
+}
+
+export function topicBassAvg(): Topic<TopicKind.BassAvg> {
+  return { kind: TopicKind.BassAvg };
 }
 
 export function topicBeatVolume(): Topic<TopicKind.BeatVolume > {
@@ -74,9 +84,7 @@ export function topicLoopSpeed(): Topic<TopicKind.LoopSpeed > {
   return { kind: TopicKind.LoopSpeed };
 }
 
-export type UpdateMessage<T> = T extends TopicKind.BPM
-  ? { kind: Topic<T>; value: BPMData }
-  : T extends TopicKind.DMX
+export type UpdateMessage<T> = T extends TopicKind.DMX
     ? { kind: Topic<T>; value: DMXData }
   : T extends TopicKind.Heartbeat
     ? { kind: Topic<T>; value: number }
@@ -84,11 +92,17 @@ export type UpdateMessage<T> = T extends TopicKind.BPM
     ? { kind: Topic<T>; value: string[] }
   : T extends TopicKind.AudioDeviceSelected
     ? { kind: Topic<T>; value: string }
+  : T extends TopicKind.Log
+    ? { kind: Topic<T>; value: string }
   : T extends TopicKind.Volume
     ? { kind: Topic<T>; value: number }
   : T extends TopicKind.Bass
     ? { kind: Topic<T>; value: number }
+  : T extends TopicKind.BassAvg
+    ? { kind: Topic<T>; value: number }
   : T extends TopicKind.BeatVolume
+    ? { kind: Topic<T>; value: number }
+  : T extends TopicKind.BPM
     ? { kind: Topic<T>; value: number }
   : T extends TopicKind.LoopSpeed
     ? { kind: Topic<T>; value: number }

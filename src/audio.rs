@@ -1,13 +1,8 @@
 use std::{
-    collections::VecDeque,
-    net::UdpSocket,
-    sync::{
+    collections::VecDeque, net::UdpSocket, sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
-    },
-    thread,
-    time::{self, Duration, Instant},
-    u8,
+    }, thread, time::{self, Duration, Instant}, u8
 };
 
 use anyhow::anyhow;
@@ -21,6 +16,7 @@ use audioviz::{
 };
 use cpal::{traits::DeviceTrait, Device, HostId};
 use crossbeam_channel::Sender;
+use itertools::Itertools;
 use log::{debug, info, warn};
 use serde::Serialize;
 use serialport::{SerialPortInfo, SerialPortType};
@@ -161,8 +157,10 @@ impl Converter {
 
 #[derive(Clone, Copy, Serialize, Debug)]
 pub enum Signal {
+    Bpm(u8),
     BeatVolume(u8),
     Bass(u8),
+    BassAvg(u8),
     Volume(u8),
 }
 
@@ -182,7 +180,9 @@ const ROLLING_AVERAGE_LOOP_ITERATIONS: usize = 100;
 const ROLLING_AVERAGE_VOLUME_SAMPLE_SIZE: usize = ROLLING_AVERAGE_LOOP_ITERATIONS / 2;
 
 const SYSTEM_MESSAGE_SPEED: Duration = Duration::from_millis(1000);
-const SIGNAL_SPEED: Duration = Duration::from_millis(10);
+const SIGNAL_SPEED: Duration = Duration::from_millis(5);
+
+const DMX_TICK_TIME: Duration = Duration::from_millis(25);
 
 macro_rules! system_message {
     ($now:ident,$last_publish:ident,$system_out:ident,$message:expr) => {
@@ -196,8 +196,10 @@ macro_rules! system_message {
 macro_rules! signal {
     ($now:ident,$last_publish:ident,$out0:ident,$dmx:ident,$tx_signal:expr) => {
         if $now - $last_publish > SIGNAL_SPEED {
-            $out0.send($tx_signal).unwrap();
-            $dmx.signal($tx_signal);
+            for signal in $tx_signal {
+                $out0.send(*signal).unwrap();
+                $dmx.signal(*signal);
+            }
             $last_publish = $now;
         }
     };
@@ -225,6 +227,7 @@ impl AudioThreadControlSignal {
     pub const CONTINUE: u8 = 0;
     pub const ABORT: u8 = 1;
     pub const DEAD: u8 = 2;
+    pub const RELOAD: u8 = 3;
 }
 
 pub fn run(
@@ -330,9 +333,18 @@ pub fn run(
     let mut long_historic = VecDeque::with_capacity(long_historic_frames);
     let mut historic = VecDeque::with_capacity(rolling_average_frames);
 
-    const BASS_FRAMES: usize = 800;
+    const BASS_FRAMES: usize = 800; // 800
     let mut bass_samples = VecDeque::with_capacity(BASS_FRAMES);
     let mut last_bass_udp_update = Instant::now();
+
+    const PEAK_FRAMES: usize = 300;
+    let mut bass_peaks: VecDeque<Instant> = VecDeque::with_capacity(PEAK_FRAMES);
+
+    //
+    // DMX
+    //
+
+    let mut time_of_last_dmx_tick = time::Instant::now();
 
     //
     //
@@ -340,15 +352,24 @@ pub fn run(
     //
     //
     //
-    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+    // let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
 
     loop {
         //
         // Loop control.
         //
-        if thread_control_signal.load(Ordering::Relaxed) == AudioThreadControlSignal::ABORT {
-            println!("Received kill, giving up...");
-            break Ok(());
+        let control = thread_control_signal.load(Ordering::Relaxed) ;
+        match control {
+            AudioThreadControlSignal::ABORT => {
+                println!("Received kill, giving up...");
+                break Ok(());
+            }
+            AudioThreadControlSignal::RELOAD => {
+                dmx_universe.reload().unwrap();
+                system_out.send(SystemMessage::Log("Reloaded DMX engine".into())).unwrap();
+                thread_control_signal.store(AudioThreadControlSignal::CONTINUE, Ordering::Relaxed);
+            }
+            _ => {}
         }
 
         //
@@ -363,8 +384,18 @@ pub fn run(
                 now,
                 time_of_last_system_publish,
                 system_out,
-                SystemMessage::LoopSpeed(loop_speed)
+                {
+                    // println!("speed={}", loop_speed.as_micros());
+                    SystemMessage::LoopSpeed(loop_speed)
+                }
             );
+        }
+
+        // Constant tick.
+        if now.duration_since(time_of_last_dmx_tick) > DMX_TICK_TIME {
+            dmx_universe.tick();
+            time_of_last_dmx_tick = now;
+            // println!("tick.");
         }
 
         /////////////////// Signal Begin ///////////////
@@ -386,7 +417,7 @@ pub fn run(
                         * 10.0) as usize;
 
                     let volume = (volume_mean as u8);
-                    Signal::Volume(volume)
+                    &[Signal::Volume(volume)]
                 }
             );
 
@@ -422,7 +453,7 @@ pub fn run(
                     .collect::<Vec<usize>>();
 
                 let avg = v.iter().sum::<usize>() as f32 / v.len() as f32;
-                let sig = (avg * 10.0) as u8;
+                let sig = (avg * 100.0) as u8;
 
                 bass_samples.push_back(sig);
 
@@ -431,24 +462,77 @@ pub fn run(
                 }
 
                 // Drop detection.
-                let len = bass_samples.len();
-                let drop = bass_samples.iter().filter(|b| **b > 20).count() >= len / 3;
+                // let len = bass_samples.len();
+                // let drop = bass_samples.iter().filter(|b| **b > 20).count() >= len / 3;
 
-                if last_bass_udp_update.elapsed().as_millis() >= 1000 {
-                    last_bass_udp_update = Instant::now();
-                    println!("drop={drop}");
-                    socket
-                        .send_to(
-                            &[b'D', if drop { b'1' } else { b'0' }],
-                            "192.168.0.100:33333",
-                        )
-                        .unwrap_or_else(|err| {
-                            println!("error UDP: {:?}", err);
-                            0
-                        });
+                // if last_bass_udp_update.elapsed().as_millis() >= 1000 {
+                //     last_bass_udp_update = Instant::now();
+                //     println!("drop={drop}");
+                //     socket
+                //         .send_to(
+                //             &[b'D', if drop { b'1' } else { b'0' }],
+                //             "192.168.0.100:33333",
+                //         )
+                //         .unwrap_or_else(|err| {
+                //             println!("error UDP: {:?}", err);
+                //             0
+                //         });
+                // }
+
+                let elapsed = match bass_peaks.iter().last() {
+                    Some(last) => last.elapsed().as_millis(),
+                    None => 10000,
+                };
+
+                // let hypothetical_bpm = 60.0 / (elapsed as f64);
+
+                if sig == 255 {
+                    if elapsed > 300  {
+                        // println!("bass peak.");
+                        bass_peaks.push_back(Instant::now());
+                    } else {
+                        // println!("bass peak stop");
+                    }
                 }
 
-                Signal::Bass(if drop { 0 } else { sig })
+                if bass_peaks.len() >= PEAK_FRAMES {
+                    bass_peaks.pop_front();
+                }
+
+                // TODO: Macro for filter logic
+
+                const SECONDS_IN_A_MINUTE: f64 = 60.0;
+                const MINIMUM_BPM: f64 = 90.0;
+                const MAXIMUM_BPM: f64 = 200.0;
+                const MAX_BPM_TIME_BETWEEN_SECS: f64 = SECONDS_IN_A_MINUTE / MINIMUM_BPM;
+                const MIN_BPM_TIME_BETWEEN_SECS: f64 = SECONDS_IN_A_MINUTE / MAXIMUM_BPM;
+
+
+                let bass_peak_durations = bass_peaks.iter().tuple_windows().filter_map(|(a, b)| {
+                    let d = (b.duration_since(*a).as_millis() as f64) / 1000.0;
+                    if d > MIN_BPM_TIME_BETWEEN_SECS && d < MAX_BPM_TIME_BETWEEN_SECS {
+                        Some(d)
+                    } else {
+                        None
+                    }
+                });
+
+                let bass_len = bass_peak_durations.clone().filter(|v| *v > MIN_BPM_TIME_BETWEEN_SECS && *v < MAX_BPM_TIME_BETWEEN_SECS).count();
+                // let bass_len = bass_peak_durations.len();
+
+                let avg_bass_peak_durations = (bass_peak_durations.sum::<f64>() / (bass_len as f64));
+
+                let bass_moving_average = bass_samples.iter().map(|v| *v as f64).sum::<f64>() / BASS_FRAMES as f64;
+
+
+                let bpm = if bass_moving_average <= 10.0 { 0.0 } else { SECONDS_IN_A_MINUTE / avg_bass_peak_durations };
+
+                // println!("bpm={bpm}, avg_bass_dur={avg_bass_peak_durations} seconds, bass_moving_avg={bass_moving_average}");
+                // if !bass_peak_durations.is_empty() {
+                //     println!("bpm={:?}", bass_peak_durations);
+                // }
+
+                &[Signal::Bass(sig), Signal::Bpm(bpm as u8), Signal::BassAvg((bass_moving_average as u8))]
             }
         );
 
@@ -491,8 +575,9 @@ pub fn run(
                 }
 
                 debug!("[AUDIO] Entering sleep mode...");
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(DMX_TICK_TIME);
                 loop_inactive = true;
+                dmx_universe.tick();
             } else if loop_inactive {
                 eprintln!("long = {long_sum}");
                 loop_inactive = false
@@ -519,13 +604,13 @@ pub fn run(
                 signal_out_0,
                 dmx_universe,
                 {
-                    eprintln!(
-                "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
-            );
+            //         eprintln!(
+            //     "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
+            // );
 
                     last_index = index_mapped;
 
-                    Signal::BeatVolume(index_mapped as u8)
+                    &[Signal::BeatVolume(index_mapped as u8)]
                 }
             );
         }
