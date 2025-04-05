@@ -5,6 +5,7 @@ use std::{
     }, thread, time::{self, Duration, Instant}, u8
 };
 
+use actix::System;
 use anyhow::anyhow;
 use audioviz::audio_capture::{capture::Capture, config::Config as CaptureConfig};
 use audioviz::{
@@ -164,10 +165,12 @@ pub enum Signal {
     Volume(u8),
 }
 
+#[derive(Clone)]
 pub enum SystemMessage {
     Heartbeat(usize),
     Log(String),
     LoopSpeed(Duration),
+    TickSpeed(Duration),
     // Audio.
     AudioSelected(Option<Device>),
     AudioDevicesView(Vec<(HostId, Device)>),
@@ -185,9 +188,11 @@ const SIGNAL_SPEED: Duration = Duration::from_millis(5);
 const DMX_TICK_TIME: Duration = Duration::from_millis(25);
 
 macro_rules! system_message {
-    ($now:ident,$last_publish:ident,$system_out:ident,$message:expr) => {
+    ($now:ident,$last_publish:ident,$system_out:ident,$tx_signal:expr) => {
         if $now - $last_publish > SYSTEM_MESSAGE_SPEED {
-            $system_out.send($message).unwrap();
+            for signal in $tx_signal {
+                $system_out.send(signal.clone()).unwrap();
+            }
             $last_publish = $now
         }
     };
@@ -376,9 +381,23 @@ pub fn run(
         // Measure loop speed.
         //
         let now = time::Instant::now();
-        {
-            let loop_speed = now - loop_begin_time;
-            loop_begin_time = now;
+        let loop_speed = now - loop_begin_time;
+        loop_begin_time = now;
+
+        // system_message!(
+        //     now,
+        //     time_of_last_system_publish,
+        //     system_out,
+        //     {
+        //         // println!("speed={}", loop_speed.as_micros());
+        //         &[SystemMessage::LoopSpeed(loop_speed)]
+        //     }
+        // );
+
+        // Constant tick.
+        if now.duration_since(time_of_last_dmx_tick) > DMX_TICK_TIME {
+            let dmx_tick_duration = dmx_universe.tick();
+            time_of_last_dmx_tick = now;
 
             system_message!(
                 now,
@@ -386,15 +405,9 @@ pub fn run(
                 system_out,
                 {
                     // println!("speed={}", loop_speed.as_micros());
-                    SystemMessage::LoopSpeed(loop_speed)
+                    &[SystemMessage::TickSpeed(dmx_tick_duration), SystemMessage::LoopSpeed(loop_speed)]
                 }
             );
-        }
-
-        // Constant tick.
-        if now.duration_since(time_of_last_dmx_tick) > DMX_TICK_TIME {
-            dmx_universe.tick();
-            time_of_last_dmx_tick = now;
             // println!("tick.");
         }
 

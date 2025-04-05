@@ -129,6 +129,7 @@ impl From<Signal> for WSSignal {
 pub enum WSSystemMessageKind {
     Heartbeat,
     Log,
+    TickSpeed,
     LoopSpeed,
     AudioSelected,
     AudioDevicesView,
@@ -153,6 +154,10 @@ impl From<SystemMessage> for WSSystemMessage {
             SystemMessage::Log(msg) => Self {
                 kind: WSSystemMessageKind::Log,
                 value: serde_json::to_value(msg).unwrap(),
+            },
+            SystemMessage::TickSpeed(duration) => Self {
+                kind: WSSystemMessageKind::TickSpeed,
+                value: serde_json::to_value(duration.as_micros() as u64).unwrap(),
             },
             SystemMessage::LoopSpeed(duration) => Self {
                 kind: WSSystemMessageKind::LoopSpeed,

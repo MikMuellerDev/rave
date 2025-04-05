@@ -17,7 +17,8 @@ export enum TopicKind {
   Bass  = 'Bass',
   BassAvg  = 'BassAvg',
   BeatVolume = 'BeatVolume',
-  LoopSpeed = 'LoopSpeed'
+  LoopSpeed = 'LoopSpeed',
+  TickSpeed = 'TickSpeed'
 }
 
 //
@@ -84,6 +85,10 @@ export function topicLoopSpeed(): Topic<TopicKind.LoopSpeed > {
   return { kind: TopicKind.LoopSpeed };
 }
 
+export function topicTickSpeed(): Topic<TopicKind.TickSpeed > {
+  return { kind: TopicKind.TickSpeed };
+}
+
 export type UpdateMessage<T> = T extends TopicKind.DMX
     ? { kind: Topic<T>; value: DMXData }
   : T extends TopicKind.Heartbeat
@@ -105,6 +110,8 @@ export type UpdateMessage<T> = T extends TopicKind.DMX
   : T extends TopicKind.BPM
     ? { kind: Topic<T>; value: number }
   : T extends TopicKind.LoopSpeed
+    ? { kind: Topic<T>; value: number }
+  : T extends TopicKind.TickSpeed
     ? { kind: Topic<T>; value: number }
       : never;
 

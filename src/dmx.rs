@@ -58,9 +58,9 @@ impl DmxUniverse {
         }
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> Duration {
         match self {
-            DmxUniverse::Dummy => {}
+            DmxUniverse::Dummy => { Duration::new(0, 0) }
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.tick(),
         }
     }
@@ -247,18 +247,19 @@ impl DmxUniverseReal {
         }
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> Duration {
         let start = Instant::now();
         let channels = self.tick_engine.tick(self.tickinput).unwrap();
         for (index, value) in channels.iter().enumerate() {
             self.channels[index] = *value as u8;
         }
 
+        let elapsed = Instant::now().duration_since(start);
        // println!("DMX processing: {} micros", Instant::now().duration_since(start).as_micros());
 
-        let start = Instant::now();
         self.write_to_serial();
         // println!("DMX write: {}", start.elapsed().as_micros())
+        elapsed
     }
 
     fn send_break(&self, duration: Duration) {

@@ -142,6 +142,7 @@ impl TickEngine {
     }
 
     pub fn reload(&mut self) -> Result<()> {
+        self.data.fill(0);
         self.init_wasm()
     }
 

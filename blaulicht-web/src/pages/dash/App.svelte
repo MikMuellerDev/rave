@@ -4,7 +4,7 @@
     import { loading } from '../../global'
     import { Button, Folder, FpsGraph, List, Monitor, ThemeUtils, type ListOptions } from 'svelte-tweakpane-ui';
     import { Binding, type BindingObject } from 'svelte-tweakpane-ui';
-    import { BlaulichtWebsocket, BlaulichtWebsocketCallbacks, topicAudioDevicesView, topicBass, topicBassAvg, topicBeatVolume, topicBPM, topicHeartbeat, topicLog, topicLoopSpeed, topicSelectAudioDevice, topicVolume } from '../../lib/websocket';
+    import { BlaulichtWebsocket, BlaulichtWebsocketCallbacks, topicAudioDevicesView, topicBass, topicBassAvg, topicBeatVolume, topicBPM, topicHeartbeat, topicLog, topicLoopSpeed, topicSelectAudioDevice, topicTickSpeed, topicVolume } from '../../lib/websocket';
     import { WaveformMonitor } from 'svelte-tweakpane-ui';
     import BpmLight from '../../components/BPMLight.svelte';
 
@@ -116,6 +116,11 @@
             loopSpeed = event.value
         })
 
+        callbacks.subscribe(topicTickSpeed(), (event) => {
+            // console.log(`Beat volume: ${event.value}`)
+            tickSpeed = event.value
+        })
+
         callbacks.subscribe(topicBPM(), (event) => {
             bpm = event.value
         })
@@ -149,6 +154,7 @@
     let waveData = [5, 6, 7, 8, 9, 3, 9, 8, 7, 6, 5];
     let volume = 85;
     let loopSpeed = 0;
+    let tickSpeed = 0;
     let bpm = 0;
 
     async function selectAudio(device: string | any) {
@@ -176,7 +182,7 @@
 <Page pageId="dash">
     <div class="page">
         <div style="width: 100%; display: flex;">
-            <div style="width: 40%;">
+            <div style="width: 60%;">
                 <div style="display: flex;">
                     <div style="width: 90%">
                         <Monitor
@@ -190,6 +196,22 @@
                     <div style="width: 10%">
                         <span>LOOP SPEED</span>
                         <Monitor value={loopSpeed} graph={false} />
+                    </div>
+                </div>
+
+                <div style="display: flex;">
+                    <div style="width: 90%">
+                        <Monitor
+                            value={tickSpeed}
+                            graph={true}
+                            max={50}
+                            theme={ThemeUtils.presets.retro}
+                            format={(v) => `${v} micro s`}
+                        />
+                    </div>
+                    <div style="width: 10%">
+                        <span>WASM SPEED</span>
+                        <Monitor value={tickSpeed} graph={false} />
                     </div>
                 </div>
 
@@ -258,7 +280,7 @@
                 <!-- </Folder> -->
             </div>
 
-            <div style="width: 60%;">
+            <div style="width: 40%;">
                 <Folder userExpandable={false} expanded={true} title="Devices">
                     <List
                         bind:value={selectedSerial}
