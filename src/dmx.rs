@@ -34,15 +34,14 @@ impl DmxUniverse {
         //
 
         let mut wasm_engine = wasm::TickEngine::create().unwrap();
-        println!("FIRST TICK...");
+
         wasm_engine.tick(TickInput {
             volume: 0,
             beat_volume: 0,
             bass: 0,
             bass_avg: 0,
             bpm: 0,
-        }).unwrap();
-        println!("FIRST TICK [done].");
+        }, true).unwrap();
 
         Self::Real(DmxUniverseReal::new(port_path, signal_out, wasm_engine))
     }
@@ -249,8 +248,9 @@ impl DmxUniverseReal {
 
     pub fn tick(&mut self) -> Duration {
         let start = Instant::now();
-        let channels = self.tick_engine.tick(self.tickinput).unwrap();
-        for (index, value) in channels.iter().enumerate() {
+        self.tick_engine.tick(self.tickinput, false).unwrap();
+
+        for (index, value) in self.tick_engine.dmx().iter().enumerate() {
             self.channels[index] = *value as u8;
         }
 

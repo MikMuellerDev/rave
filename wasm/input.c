@@ -15,32 +15,32 @@
 
 #define MAX_BRIGHTNESS_NON_STROBE 50
 
-int abs(int x) {
+int abs(int32_t x) {
     return (x < 0) ? -x : x;
 }
 
 
-int elapsed(int time, int * data, int index) {
+int elapsed(int32_t time, int32_t * data, int32_t index) {
     return time - data[index];
 }
 
-void write_last_bpm_flash(int *data, int time) {
+void write_last_bpm_flash(int32_t *data, int32_t time) {
     data[BPM_STROBE_LAST_TICK_INDEX] = time;
 }
 
-void write_last_bpm_flash_high(int *data, int time) {
+void write_last_bpm_flash_high(int32_t *data, int32_t time) {
     data[BPM_STROBE_LAST_TICK_HIGH_INDEX] = time;
 }
 
-int since_last_bpm_flash(int *data, int time) {
+int since_last_bpm_flash(int32_t *data, int32_t time) {
     return elapsed(time, data, BPM_STROBE_LAST_TICK_INDEX);
 }
 
-int since_last_bpm_flash_high(int *data, int time) {
+int since_last_bpm_flash_high(int32_t *data, int32_t time) {
     return elapsed(time, data, BPM_STROBE_LAST_TICK_HIGH_INDEX);
 }
 
-void set_white(int v, int * dmx) {
+void set_white(int v, uint8_t * dmx) {
     dmx[1] = v;
     dmx[2] = v;
     dmx[3] = v;
@@ -51,20 +51,20 @@ void set_white(int v, int * dmx) {
     dmx[102] = v;
 }
 
-int pow(int base, int exp) {
-    int acc = base;
-    for (int i = 1; i < exp; i++) {
-        acc *= base;
-    }
-    return acc;
-}
+// int pow(int base, int exp) {
+//     int acc = base;
+//     for (int i = 1; i < exp; i++) {
+//         acc *= base;
+//     }
+//     return acc;
+// }
 
-long map(long x, long in_min, long in_max, long out_min, long out_max) {
+long map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max) {
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 // Convert HSV hue (0–360) to RGB
-void hsv_to_rgb(int h, int *r, int *g, int *b) {
+void hsv_to_rgb(int32_t h, int32_t *r, int32_t *g, int32_t *b) {
     float s = 1.0f;
     float v = 1.0f;
     float c = v * s;
@@ -87,18 +87,22 @@ void hsv_to_rgb(int h, int *r, int *g, int *b) {
         rf = c; gf = 0; bf = x;
     }
 
-    *r = (int)((rf + m) * 255);
-    *g = (int)((gf + m) * 255);
-    *b = (int)((bf + m) * 255);
+    *r = (int32_t)((rf + m) * 255);
+    *g = (int32_t)((gf + m) * 255);
+    *b = (int32_t)((bf + m) * 255);
+}
+
+void initialize(TickInput input, uint8_t *dmx_array, int32_t dmx_len) {
+    bl_puts("WASM: Initialized was called.");
 }
 
 void tick(
     TickInput input,
-    int *dmx, int dmx_len,
-    int *data, int data_len
+    uint8_t *dmx, int32_t dmx_len,
+    int32_t *data, int32_t data_len
 ) {
     // --- Rainbow RGB effect ---
-    if (since_last_bpm_flash(data, input.time) > 500) {
+    if (since_last_bpm_flash(data, input.time) > 1000) {
         int hue = data[150]; // persistent hue
         int r, g, b;
         hsv_to_rgb(hue, &r, &g, &b);
@@ -113,11 +117,11 @@ void tick(
         dmx[3] = g;
         dmx[4] = b;
 
-        // advance hue
-        if (input.volume > 0) {
-            hue = (hue + 1) % 360;
-            data[150] = hue;
-        }
+        // TODO: advance hue
+        // if (input.volume > 0) {
+        //     hue = (hue + 1) % 360;
+        //     data[150] = hue;
+        // }
     }
 
     // --- Audio-reactive white strobe ---
@@ -135,7 +139,7 @@ void tick(
         data[IS_WHITE_VALUE_INDEX] = !data[IS_WHITE_VALUE_INDEX];
 
         set_white(data[WHITE_VALUE_INDEX], dmx);
-        bl_puts("Entered strobe branch.");
+        // bl_puts("Entered strobe branch.");
         return;
     } else if (data[IS_WHITE_VALUE_INDEX]) {
         set_white(0, dmx);
@@ -146,7 +150,7 @@ void tick(
     // --- BPM-based strobe ---
     int elapsed = since_last_bpm_flash(data, input.time);
     int bpm = input.bpm;
-    int target_elapsed_bpm = (int)((1.0 / (float)bpm) * 60.0 * 1000.0);
+    int target_elapsed_bpm = (int)((1.0 / (float)bpm) * 60.0 * 1000.0 * 1.0);
 
     if (input.bass_avg < 100 && input.bass < 100) {
         if (data[IS_WHITE_VALUE_INDEX]) {

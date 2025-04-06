@@ -76,7 +76,7 @@
 // }
 
 TickInput tickinput_from_array(int * tick_input_array, int tick_array_len) {
-    #define ARRAY_LEN 6
+    #define ARRAY_LEN 7
 
     if (tick_array_len != ARRAY_LEN) {
         bl_puts("tick array len in 'tickinput_from_array' is not expected length:");
@@ -91,27 +91,34 @@ TickInput tickinput_from_array(int * tick_input_array, int tick_array_len) {
         .bass = tick_input_array[3],
         .bass_avg = tick_input_array[4],
         .bpm = tick_input_array[5],
+        .initial = tick_input_array[6],
     };
 
     return input;
 }
 
 void internal_tick(
-    int * tick_input_array, int tick_array_len,
-    int * dmx_array, int dmx_array_len,
-    int * data_array, int data_len
+    int32_t * tick_input_array, int32_t tick_array_len,
+    uint8_t * dmx_array, int32_t dmx_array_len,
+    int32_t * data_array, int32_t data_len
 ) {
     TickInput input = tickinput_from_array(tick_input_array, tick_array_len);
 
     #define DMX_LEN 513
 
     if (dmx_array_len != DMX_LEN) {
-        bl_puts("DMX array in 'internal_tick()' is not of exected length:");
+        bl_puts("DMX array in 'internal_tick()' is not of exected length; got:");
         bl_log_int(dmx_array_len);
+        bl_puts("expected: ");
+        bl_log_int(DMX_LEN);
         abort();
     }
 
-    tick(input, dmx_array, dmx_array_len, data_array, data_len);
+    if (input.initial) {
+        initialize(input, dmx_array, dmx_array_len);
+    } else {
+        tick(input, dmx_array, dmx_array_len, data_array, data_len);
+    }
 }
 
 void abort() {

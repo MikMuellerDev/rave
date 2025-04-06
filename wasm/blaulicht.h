@@ -19,18 +19,21 @@ typedef struct {
     uint8_t bass;
     uint8_t bass_avg;
     uint8_t bpm;
+    bool initial;
 } TickInput;
 
 void internal_tick(
-    int * tick_input_array, int tick_array_len,
-    int * dmx_array, int dmx_array_len,
-    int * data_array, int data_len
+    int32_t * tick_input_array, int32_t tick_array_len,
+    uint8_t * dmx_array, int32_t dmx_array_len,
+    int32_t * data_array, int32_t data_len
 );
+
+void initialize(TickInput input, uint8_t *dmx_array, int32_t dmx_array_len);
 
 void tick(
     TickInput input,
-     int * dmx_array, int dmx_array_len,
-     int *data, int data_len
+     uint8_t * dmx_array, int32_t dmx_array_len,
+     int32_t *data, int32_t data_len
 );
 
 // Result functions

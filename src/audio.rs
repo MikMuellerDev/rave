@@ -334,7 +334,7 @@ pub fn run(
     let mut time_of_last_beat_publish = time::Instant::now();
     let mut last_index = 0;
     let rolling_average_frames = 100;
-    let long_historic_frames = rolling_average_frames * 100;
+    let long_historic_frames = rolling_average_frames * 1000;
     let mut long_historic = VecDeque::with_capacity(long_historic_frames);
     let mut historic = VecDeque::with_capacity(rolling_average_frames);
 

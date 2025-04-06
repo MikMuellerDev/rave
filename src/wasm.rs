@@ -5,6 +5,7 @@
 
 use std::time::{Instant, UNIX_EPOCH};
 
+use actix_web::rt::net::UdpSocket;
 use wasmtime::*;
 
 struct MyState {
@@ -22,7 +23,7 @@ pub struct TickInput {
 }
 
 impl TickInput {
-    fn serialize(&self, timer_start: Instant) -> [i32; 6] {
+    fn serialize(&self, timer_start: Instant, initial: bool) -> [i32; 7] {
         [
             Instant::now().duration_since(timer_start).as_millis() as i32, // Time.
             self.volume.into(),
@@ -30,6 +31,7 @@ impl TickInput {
             self.bass.into(),
             self.bass_avg.into(),
             self.bpm.into(),
+            initial as i32,
         ]
     }
 }
@@ -37,6 +39,7 @@ impl TickInput {
 pub struct TickEngine {
     timer_start: Instant,
     data: Vec<i32>,
+    dmx: Vec<u8>,
     wasm: Option<WasmEngine>,
 }
 
@@ -50,13 +53,18 @@ impl TickEngine {
     pub fn create() -> Result<Self> {
         let mut engine = TickEngine {
             timer_start: Instant::now(),
-            data: vec![],
+            data: vec![0; 1000],
+            dmx: vec![0; 513],
             wasm: None,
         };
 
-        engine.init_wasm();
+        engine.init_wasm()?;
 
         Ok(engine)
+    }
+
+    pub fn dmx(&self) -> &[u8] {
+        &self.dmx
     }
 
     fn init_wasm(&mut self) -> Result<()> {
@@ -146,58 +154,58 @@ impl TickEngine {
         self.init_wasm()
     }
 
-    pub fn tick(&mut self, input: TickInput) -> Result<Vec<i32>> {
+    pub fn tick(&mut self, input: TickInput, initial: bool) -> Result<()> {
         let wasm = self.wasm.as_mut().unwrap();
 
-        // Get the function
+        //
+        // Tick function.
+        //
         let func = wasm
             .instance
             .get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
                 &mut wasm.store,
-                "internal_tick",
+                "internal_tick", // TODO: external type and name constants.
             )?;
 
+        //
+        // Tick input array.
+        //
         let tick_array_offset = 0x1000; // Arbitrary offset
-        let tick_array_data = input.serialize(self.timer_start);
+        let tick_array_data = input.serialize(self.timer_start, initial);
         let tick_array_len = tick_array_data.len() as i32;
-
-        // Convert to little-endian bytes
         let mut tick_array_bytes = Vec::new();
         for &num in &tick_array_data {
             tick_array_bytes.extend_from_slice(&num.to_le_bytes());
         }
+        wasm.memory
+            .write(&mut wasm.store, tick_array_offset, &tick_array_bytes)?;
 
-        // DMX array
-        // TODO: actually store on self and not create new?
-        let dmx_array_offset = 0x2000; // Arbitrary offset
-        let dmx_array_data: Vec<u8> = vec![0; 513];
-        let dmx_array_len = dmx_array_data.len() as i32;
+        // TODO: macro for this array stuff.
 
-        // Convert to little-endian bytes
+        //
+        // DMX array.
+        //
+        let dmx_array_offset = 0x2000; // TODO: make this offset a const.
+        let dmx_array_len = self.dmx.len() as i32;
         let mut dmx_array_bytes = Vec::new();
-        for &num in &dmx_array_data {
+        for &num in &self.dmx {
             dmx_array_bytes.extend_from_slice(&num.to_le_bytes());
         }
+        wasm.memory
+            .write(&mut wasm.store, dmx_array_offset, &dmx_array_bytes)?;
 
-        // Data array
+        //
+        // Data array.
+        //
         let data_array_offset = 0x9000; // Arbitrary offset
         let data_array_len = self.data.len();
-
-        // Convert to little-endian bytes
         let mut data_array_bytes = Vec::new();
         for &num in &self.data {
             data_array_bytes.extend_from_slice(&num.to_le_bytes());
         }
-
-        // Write the array into Wasm memory
-        wasm.memory
-            .write(&mut wasm.store, dmx_array_offset, &dmx_array_bytes)?;
-
-        wasm.memory
-            .write(&mut wasm.store, tick_array_offset, &tick_array_bytes)?;
-
         wasm.memory
             .write(&mut wasm.store, data_array_offset, &data_array_bytes)?;
+
 
         // Call the function with the pointer and length
         func.call(
@@ -212,39 +220,26 @@ impl TickEngine {
             ),
         )?;
 
-        // Read back the modified DMX + data array
+        //
+        // Read back the modified DMX array
+        //
         let mut updated_dmx_bytes = vec![0u8; dmx_array_bytes.len()];
         wasm.memory
             .read(&mut wasm.store, dmx_array_offset, &mut updated_dmx_bytes)?;
+        self.dmx = updated_dmx_bytes;
 
-        // Convert bytes back to integers
-        let updated_array: Vec<i32> = updated_dmx_bytes
-            .chunks_exact(4)
-            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
-            .collect();
-
-        // println!("Updated DMX: {:?}", &updated_array[0..10]);
-
+        //
+        // Read back data array.
+        //
         let mut updated_data_bytes = vec![0u8; data_array_bytes.len()];
         wasm.memory
             .read(&mut wasm.store, data_array_offset, &mut updated_data_bytes)?;
-
-        // Convert bytes back to integers
-        let updated_data_array: Vec<i32> = updated_data_bytes
+        let updated_data_bytes: Vec<i32> = updated_data_bytes
             .chunks_exact(4)
             .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
             .collect();
+        self.data = updated_data_bytes;
 
-        // println!("Updated data: {:?}", &updated_array[0..10]);
-
-        /// END
-        // let run = instance.get_typed_func::<(TickInput), ()>(&mut store, "tick")?;
-
-        // // And last but not least we can call it!
-        // println!("Calling export...");
-        // run.call(&mut store, ())?;
-
-        // println!("Done.");
-        Ok(updated_array)
+        Ok(())
     }
 }
