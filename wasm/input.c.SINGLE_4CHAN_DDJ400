@@ -14,6 +14,8 @@
 // therefore, the VJ must touch the wheel to peak.
 #define STROBE_TIME 60
 
+// TODO: also add automatic color progression, and make it toggleable and also variable in speed.
+
 #define STROBE_START_INDEX 200
 #define IS_STROBE_INDEX 201
 
