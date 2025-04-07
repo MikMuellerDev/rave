@@ -30,6 +30,8 @@ actix-web-actors = "4.3.1"
 actix-ws = "0.3.0"
 itertools = "0.14.0"
 wasmtime = "31.0.0"
+midir = "0.10.1"
+wmidi = "4.0.10"
 
 [profile.release]
 opt-level = 3

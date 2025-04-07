@@ -7,6 +7,7 @@
     import { BlaulichtWebsocket, BlaulichtWebsocketCallbacks, topicAudioDevicesView, topicBass, topicBassAvg, topicBeatVolume, topicBPM, topicHeartbeat, topicLog, topicLoopSpeed, topicSelectAudioDevice, topicTickSpeed, topicVolume } from '../../lib/websocket';
     import { WaveformMonitor } from 'svelte-tweakpane-ui';
     import BpmLight from '../../components/BPMLight.svelte';
+    // import { midi } from '../../lib/midi';
 
     async function loadAvailableAudioDevices(): Promise<String[]> {
         let res = (await fetch('/api/audio/devices')).json()
@@ -147,6 +148,8 @@
         // setInterval(() => {
         //     numberToMonitor = Math.random() * 100;
         // }, 50);
+
+        // midi();
 
         $loading = false
     })

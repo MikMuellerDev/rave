@@ -3,10 +3,14 @@
 
 // You can execute this example with `cargo run --example hello`
 
+use crossbeam_channel::Sender;
 use std::time::{Instant, UNIX_EPOCH};
 
 use actix_web::rt::net::UdpSocket;
+use itertools::Itertools;
 use wasmtime::*;
+
+use crate::midi;
 
 struct MyState {
     name: String,
@@ -41,24 +45,28 @@ pub struct TickEngine {
     data: Vec<i32>,
     dmx: Vec<u8>,
     wasm: Option<WasmEngine>,
+    midi_out: Sender<(u8, u8, u8)>,
 }
 
 pub struct WasmEngine {
     store: Store<MyState>,
     instance: Instance,
     memory: Memory,
+    // midi_out: SyncSender<(u8, u8, u8)>,
 }
 
 impl TickEngine {
-    pub fn create() -> Result<Self> {
+    pub fn create(midi_out: Sender<(u8, u8, u8)>) -> Result<Self> {
         let mut engine = TickEngine {
             timer_start: Instant::now(),
             data: vec![0; 1000],
             dmx: vec![0; 513],
             wasm: None,
+            midi_out,
         };
 
         engine.init_wasm()?;
+        engine.first_tick()?;
 
         Ok(engine)
     }
@@ -93,41 +101,63 @@ impl TickEngine {
             },
         );
 
+        let mut linker = Linker::new(&engine);
+
         // Our wasm module we'll be instantiating requires one imported function.
         // the function takes no parameters and returns no results. We create a host
         // implementation of that function here, and the `caller` parameter here is
         // used to get access to our original `MyState` value.
         println!("Creating callback...");
-        let log_function = Func::wrap(
-            &mut store,
-            |mut caller: Caller<'_, MyState>, str_pointer: i32, str_len: i32| {
-                // println!("TRIGGERED CALLBACK");
-                // println!("> {}", caller.data().name);
-                // caller.data_mut().count += 1;
+        linker
+            .func_wrap(
+                "blaulicht",
+                "log",
+                |mut caller: Caller<'_, MyState>, str_pointer: i32, str_len: i32| {
+                    // println!("TRIGGERED CALLBACK");
+                    // println!("> {}", caller.data().name);
+                    // caller.data_mut().count += 1;
 
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|export| export.into_memory())
-                    .expect("Failed to find memory");
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(|export| export.into_memory())
+                        .expect("Failed to find memory");
 
-                // Read `len` bytes from memory starting at `ptr`
-                let mut buffer = vec![0u8; str_len as usize];
-                memory
-                    .read(&caller, str_pointer as usize, &mut buffer)
-                    .expect("Failed to read memory");
+                    // Read `len` bytes from memory starting at `ptr`
+                    let mut buffer = vec![0u8; str_len as usize];
+                    memory
+                        .read(&caller, str_pointer as usize, &mut buffer)
+                        .expect("Failed to read memory");
 
-                // Convert bytes to a String
-                let received_string = String::from_utf8_lossy(&buffer).to_string();
-                println!("[WASM] {received_string}");
-            },
-        );
+                    // Convert bytes to a String
+                    let received_string = String::from_utf8_lossy(&buffer).to_string();
+                    println!("[WASM] {received_string}");
+                },
+            )
+            .unwrap();
+        // let log_function = Func::wrap(
+        // );
+
+        let mo = self.midi_out.clone();
+        let midi_function = linker
+            .func_wrap(
+                "blaulicht",
+                "midi",
+                move |status: i32, kind: i32, value: i32| {
+                    // println!("TRIGGERED CALLBACK");
+                    // println!("> {}", caller.data().name);
+                    // caller.data_mut().count += 1;
+
+                    // println!("[WASM] MIDI: {status}: {kind}: {value}");
+                    mo.send((status as u8, kind as u8, value as u8)).unwrap();
+                },
+            )
+            .unwrap();
 
         // Once we've got that all set up we can then move to the instantiation
         // phase, pairing together a compiled module as well as a set of imports.
         // Note that this is where the wasm `start` function, if any, would run.
         println!("Instantiating module...");
-        let imports = [log_function.into()];
-        let instance = Instance::new(&mut store, &module, &imports)?;
+        let instance = linker.instantiate(&mut store, &module)?;
 
         // Next we poke around a bit to extract the `run` function from the module.
         println!("Extracting export...");
@@ -151,10 +181,30 @@ impl TickEngine {
 
     pub fn reload(&mut self) -> Result<()> {
         self.data.fill(0);
-        self.init_wasm()
+        self.init_wasm()?;
+        self.first_tick()
     }
 
-    pub fn tick(&mut self, input: TickInput, initial: bool) -> Result<()> {
+    pub fn first_tick(&mut self) -> Result<()> {
+        self.tick(
+            TickInput {
+                volume: 0,
+                beat_volume: 0,
+                bass: 0,
+                bass_avg: 0,
+                bpm: 0,
+            },
+            &[],
+            true,
+        )
+    }
+
+    pub fn tick(
+        &mut self,
+        input: TickInput,
+        midi_events: &[(u8, u8, u8)],
+        initial: bool,
+    ) -> Result<()> {
         let wasm = self.wasm.as_mut().unwrap();
 
         //
@@ -162,7 +212,7 @@ impl TickEngine {
         //
         let func = wasm
             .instance
-            .get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
+            .get_typed_func::<(i32, i32, i32, i32, i32, i32, i32, i32), ()>(
                 &mut wasm.store,
                 "internal_tick", // TODO: external type and name constants.
             )?;
@@ -181,6 +231,29 @@ impl TickEngine {
             .write(&mut wasm.store, tick_array_offset, &tick_array_bytes)?;
 
         // TODO: macro for this array stuff.
+
+        //
+        // MIDI array.
+        //
+        let midi_array_offset = 0x8000; // TODO: make this offset a const.
+        let midi_array_len = midi_events.len() as i32;
+
+        if (midi_array_len > 100) {
+            panic!("TOO many MIDI events!");
+        }
+
+        let mut midi_array_bytes = Vec::new();
+
+        let midi_events_packed: Vec<u32> = midi_events
+            .iter()
+            .map(|(a, b, c)| (0u32 | (*a as u32) << 16 | (*b as u32) << 8 | (*c as u32)))
+            .collect();
+
+        for &num in &midi_events_packed {
+            midi_array_bytes.extend_from_slice(&num.to_le_bytes());
+        }
+        wasm.memory
+            .write(&mut wasm.store, midi_array_offset, &midi_array_bytes)?;
 
         //
         // DMX array.
@@ -206,7 +279,6 @@ impl TickEngine {
         wasm.memory
             .write(&mut wasm.store, data_array_offset, &data_array_bytes)?;
 
-
         // Call the function with the pointer and length
         func.call(
             &mut wasm.store,
@@ -217,6 +289,8 @@ impl TickEngine {
                 dmx_array_len,
                 data_array_offset as i32,
                 data_array_len as i32,
+                midi_array_offset as i32,
+                midi_array_len as i32,
             ),
         )?;
 

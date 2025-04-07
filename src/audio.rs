@@ -1,9 +1,16 @@
 use std::{
-    collections::VecDeque, net::UdpSocket, sync::{
+    collections::VecDeque,
+    net::UdpSocket,
+    sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
-    }, thread, time::{self, Duration, Instant}, u8
+    },
+    thread,
+    time::{self, Duration, Instant},
+    u8,
 };
+
+use crossbeam_channel::{Sender, TryRecvError};
 
 use actix::System;
 use anyhow::anyhow;
@@ -16,7 +23,6 @@ use audioviz::{
     },
 };
 use cpal::{traits::DeviceTrait, Device, HostId};
-use crossbeam_channel::Sender;
 use itertools::Itertools;
 use log::{debug, info, warn};
 use serde::Serialize;
@@ -24,7 +30,7 @@ use serialport::{SerialPortInfo, SerialPortType};
 
 use crate::{
     dmx::{DmxUniverse, USB_DEVICES},
-    DmxData, ToFrontent,
+    midi, DmxData, ToFrontent,
 };
 
 fn map(x: isize, in_min: isize, in_max: isize, out_min: isize, out_max: isize) -> usize {
@@ -306,6 +312,11 @@ pub fn run(
         warn!("No default DMX serial output available");
     }
 
+    println!("Creating midi...");
+    let (midi_in_sender, midi_in_receiver) = crossbeam_channel::bounded(100);
+    let (midi_out_sender, midi_out_receiver) = crossbeam_channel::bounded(10);
+    midi::midi(midi_in_sender, midi_out_receiver);
+
     let mut dmx_universe = match serial_port {
         Some(port) => {
             let serial_port_name = port.port_name.clone();
@@ -313,7 +324,7 @@ pub fn run(
             system_out
                 .send(SystemMessage::SerialSelected(Some(port.clone())))
                 .unwrap();
-            DmxUniverse::new(serial_port_name, signal_out_0.clone())
+            DmxUniverse::new(serial_port_name, signal_out_0.clone(), midi_out_sender)
         }
         None => DmxUniverse::new_dummy(),
     };
@@ -363,7 +374,7 @@ pub fn run(
         //
         // Loop control.
         //
-        let control = thread_control_signal.load(Ordering::Relaxed) ;
+        let control = thread_control_signal.load(Ordering::Relaxed);
         match control {
             AudioThreadControlSignal::ABORT => {
                 println!("Received kill, giving up...");
@@ -371,7 +382,9 @@ pub fn run(
             }
             AudioThreadControlSignal::RELOAD => {
                 dmx_universe.reload().unwrap();
-                system_out.send(SystemMessage::Log("Reloaded DMX engine".into())).unwrap();
+                system_out
+                    .send(SystemMessage::Log("Reloaded DMX engine".into()))
+                    .unwrap();
                 thread_control_signal.store(AudioThreadControlSignal::CONTINUE, Ordering::Relaxed);
             }
             _ => {}
@@ -396,18 +409,30 @@ pub fn run(
 
         // Constant tick.
         if now.duration_since(time_of_last_dmx_tick) > DMX_TICK_TIME {
-            let dmx_tick_duration = dmx_universe.tick();
+            // Check for MIDI signals.
+            let mut midi = vec![];
+            loop {
+                match midi_in_receiver.try_recv() {
+                    Ok(data) => midi.push(data),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => panic!("error"),
+                }
+            }
+
+            // if midi.len() > 0 {
+            //     println!("MIDI MSGS: {}", midi.len());
+            // }
+
+            let dmx_tick_duration = dmx_universe.tick(&midi);
             time_of_last_dmx_tick = now;
 
-            system_message!(
-                now,
-                time_of_last_system_publish,
-                system_out,
-                {
-                    // println!("speed={}", loop_speed.as_micros());
-                    &[SystemMessage::TickSpeed(dmx_tick_duration), SystemMessage::LoopSpeed(loop_speed)]
-                }
-            );
+            system_message!(now, time_of_last_system_publish, system_out, {
+                // println!("speed={}", loop_speed.as_micros());
+                &[
+                    SystemMessage::TickSpeed(dmx_tick_duration),
+                    SystemMessage::LoopSpeed(loop_speed),
+                ]
+            });
             // println!("tick.");
         }
 
@@ -500,7 +525,7 @@ pub fn run(
                 // let hypothetical_bpm = 60.0 / (elapsed as f64);
 
                 if sig == 255 {
-                    if elapsed > 300  {
+                    if elapsed > 300 {
                         // println!("bass peak.");
                         bass_peaks.push_back(Instant::now());
                     } else {
@@ -520,7 +545,6 @@ pub fn run(
                 const MAX_BPM_TIME_BETWEEN_SECS: f64 = SECONDS_IN_A_MINUTE / MINIMUM_BPM;
                 const MIN_BPM_TIME_BETWEEN_SECS: f64 = SECONDS_IN_A_MINUTE / MAXIMUM_BPM;
 
-
                 let bass_peak_durations = bass_peaks.iter().tuple_windows().filter_map(|(a, b)| {
                     let d = (b.duration_since(*a).as_millis() as f64) / 1000.0;
                     if d > MIN_BPM_TIME_BETWEEN_SECS && d < MAX_BPM_TIME_BETWEEN_SECS {
@@ -530,22 +554,34 @@ pub fn run(
                     }
                 });
 
-                let bass_len = bass_peak_durations.clone().filter(|v| *v > MIN_BPM_TIME_BETWEEN_SECS && *v < MAX_BPM_TIME_BETWEEN_SECS).count();
+                let bass_len = bass_peak_durations
+                    .clone()
+                    .filter(|v| *v > MIN_BPM_TIME_BETWEEN_SECS && *v < MAX_BPM_TIME_BETWEEN_SECS)
+                    .count();
                 // let bass_len = bass_peak_durations.len();
 
-                let avg_bass_peak_durations = (bass_peak_durations.sum::<f64>() / (bass_len as f64));
+                let avg_bass_peak_durations =
+                    (bass_peak_durations.sum::<f64>() / (bass_len as f64));
 
-                let bass_moving_average = bass_samples.iter().map(|v| *v as f64).sum::<f64>() / BASS_FRAMES as f64;
+                let bass_moving_average =
+                    bass_samples.iter().map(|v| *v as f64).sum::<f64>() / BASS_FRAMES as f64;
 
-
-                let bpm = if bass_moving_average <= 10.0 { 0.0 } else { SECONDS_IN_A_MINUTE / avg_bass_peak_durations };
+                let bpm = if bass_moving_average <= 10.0 {
+                    0.0
+                } else {
+                    SECONDS_IN_A_MINUTE / avg_bass_peak_durations
+                };
 
                 // println!("bpm={bpm}, avg_bass_dur={avg_bass_peak_durations} seconds, bass_moving_avg={bass_moving_average}");
                 // if !bass_peak_durations.is_empty() {
                 //     println!("bpm={:?}", bass_peak_durations);
                 // }
 
-                &[Signal::Bass(sig), Signal::Bpm(bpm as u8), Signal::BassAvg((bass_moving_average as u8))]
+                &[
+                    Signal::Bass(sig),
+                    Signal::Bpm(bpm as u8),
+                    Signal::BassAvg((bass_moving_average as u8)),
+                ]
             }
         );
 
@@ -580,21 +616,34 @@ pub fn run(
             let max = historic.iter().max().unwrap_or(&usize::MAX);
             let min = historic.iter().min().unwrap_or(&usize::MIN);
 
-            let long_sum = long_historic.iter().sum::<usize>();
+            // let long_sum = long_historic.iter().sum::<usize>();
+            // if long_sum == 0 {
+            //     if !loop_inactive {
+            //         eprintln!("long historic is 0: sleeping");
+            //     }
 
-            if long_sum == 0 {
-                if !loop_inactive {
-                    eprintln!("long historic is 0: sleeping");
-                }
+            //     debug!("[AUDIO] Entering sleep mode...");
+            //     thread::sleep(DMX_TICK_TIME);
+            //     loop_inactive = true;
 
-                debug!("[AUDIO] Entering sleep mode...");
-                thread::sleep(DMX_TICK_TIME);
-                loop_inactive = true;
-                dmx_universe.tick();
-            } else if loop_inactive {
-                eprintln!("long = {long_sum}");
-                loop_inactive = false
-            }
+            //     let mut midi = vec![];
+            //     loop {
+            //         match midi_in_receiver.try_recv() {
+            //             Ok(data) => midi.push(data),
+            //             Err(TryRecvError::Empty) => break,
+            //             Err(TryRecvError::Disconnected) => panic!("error"),
+            //         }
+            //     }
+
+            //     // if !midi.is_empty() {
+            //     //     println!("MIDI MSGS: {}", midi.len());
+            //     // }
+
+            //     dmx_universe.tick(&midi);
+            // } else if loop_inactive {
+            //     eprintln!("long = {long_sum}");
+            //     loop_inactive = false
+            // }
 
             const MAX_BEAT_VOLUME: u8 = 255;
             let index_mapped = map(
@@ -605,27 +654,24 @@ pub fn run(
                 MAX_BEAT_VOLUME as isize,
             );
 
-            if last_index == index_mapped {
-                continue;
+            if last_index != index_mapped {
+                let now = time::Instant::now();
+                signal!(
+                    now,
+                    time_of_last_beat_publish,
+                    signal_out_0,
+                    dmx_universe,
+                    {
+                        //         eprintln!(
+                        //     "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
+                        // );
+
+                        last_index = index_mapped;
+
+                        &[Signal::BeatVolume(index_mapped as u8)]
+                    }
+                );
             }
-
-            let now = time::Instant::now();
-
-            signal!(
-                now,
-                time_of_last_beat_publish,
-                signal_out_0,
-                dmx_universe,
-                {
-            //         eprintln!(
-            //     "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
-            // );
-
-                    last_index = index_mapped;
-
-                    &[Signal::BeatVolume(index_mapped as u8)]
-                }
-            );
         }
     }
 }

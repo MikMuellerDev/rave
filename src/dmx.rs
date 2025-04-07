@@ -1,9 +1,9 @@
 use std::{
     mem, net::UdpSocket, sync::{
-        atomic::{AtomicU8, Ordering},
-        Arc,
+        atomic::{AtomicU8, Ordering},  Arc
     }, thread, time::{Duration, Instant}, vec
 };
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use crate::{
     utils::device_from_name,
@@ -12,7 +12,6 @@ use crate::{
 };
 
 use cpal::{traits::DeviceTrait, Device};
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use log::{info, warn};
 use serialport::{SerialPort, SerialPortInfo, SerialPortType};
 
@@ -28,20 +27,20 @@ pub enum DmxUniverse {
 }
 
 impl DmxUniverse {
-    pub fn new(port_path: String, signal_out: Sender<Signal>) -> Self {
+    pub fn new(port_path: String, signal_out: Sender<Signal>, midi_out: Sender<(u8, u8, u8)>) -> Self {
         //
         // WASM engine.
         //
 
-        let mut wasm_engine = wasm::TickEngine::create().unwrap();
+        let mut wasm_engine = wasm::TickEngine::create(midi_out).unwrap();
 
-        wasm_engine.tick(TickInput {
-            volume: 0,
-            beat_volume: 0,
-            bass: 0,
-            bass_avg: 0,
-            bpm: 0,
-        }, true).unwrap();
+        // wasm_engine.tick(TickInput {
+        //     volume: 0,
+        //     beat_volume: 0,
+        //     bass: 0,
+        //     bass_avg: 0,
+        //     bpm: 0,
+        // }, &[], true).unwrap();
 
         Self::Real(DmxUniverseReal::new(port_path, signal_out, wasm_engine))
     }
@@ -57,10 +56,10 @@ impl DmxUniverse {
         }
     }
 
-    pub fn tick(&mut self) -> Duration {
+    pub fn tick(&mut self, midi: &[(u8, u8, u8)]) -> Duration {
         match self {
             DmxUniverse::Dummy => { Duration::new(0, 0) }
-            DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.tick(),
+            DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.tick(midi),
         }
     }
 
@@ -246,9 +245,9 @@ impl DmxUniverseReal {
         }
     }
 
-    pub fn tick(&mut self) -> Duration {
+    pub fn tick(&mut self, midi: &[(u8 ,u8, u8)]) -> Duration {
         let start = Instant::now();
-        self.tick_engine.tick(self.tickinput, false).unwrap();
+        self.tick_engine.tick(self.tickinput, &midi, false).unwrap();
 
         for (index, value) in self.tick_engine.dmx().iter().enumerate() {
             self.channels[index] = *value as u8;

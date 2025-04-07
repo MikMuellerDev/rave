@@ -7,6 +7,7 @@ pub mod dmx;
 pub mod routes;
 pub mod utils;
 pub mod wasm;
+pub mod midi;
 
 pub struct DmxData {
     channels: [u8; 512],

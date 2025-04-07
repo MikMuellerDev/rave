@@ -1,13 +1,17 @@
 #include "blaulicht.h"
 
 #define IS_WHITE_VALUE_INDEX 7
-#define WHITE_VALUE_INDEX 8 
+#define WHITE_VALUE_INDEX 8
 
 #define BPM_STROBE_LAST_TICK_INDEX 9
 #define BPM_STROBE_LAST_TICK_HIGH_INDEX 10
 #define BPM_STROBE_MODE_INDEX 11
 
 #define BPM_STROBE_DURATION_MILLIS 10
+
+// TODO: also add a modifier for this, best would be the weel above the speed modifier
+// Then, each touch of a dial will use the dial's data source for the left indicator.
+// therefore, the VJ must touch the wheel to peak.
 #define STROBE_TIME 60
 
 #define STROBE_START_INDEX 200
@@ -15,40 +19,66 @@
 
 #define MAX_BRIGHTNESS_NON_STROBE 50
 
-int abs(int32_t x) {
-    return (x < 0) ? -x : x;
-}
+#define CROSSFADER_STATUS 182
+#define CROSSFADER_KIND 31
+#define CROSSFADER_KEY 199
 
+#define LEFT_FADER_STATUS 176
+#define LEFT_FADER_KIND 19
+#define FLASH_BRIGHTNESS_KEY 198
 
-int elapsed(int32_t time, int32_t * data, int32_t index) {
-    return time - data[index];
-}
+#define RIGHT_FADER_STATUS 177
+#define RIGHT_FADER_KIND 19
+#define NORMAL_BRIGHTNESS_KEY 197
 
-void write_last_bpm_flash(int32_t *data, int32_t time) {
-    data[BPM_STROBE_LAST_TICK_INDEX] = time;
-}
+#define CUE_LEFT_STATUS 144
+#define CUE_LEFT_KIND 84
+#define STROBE_ACTIVE_INDEX 195
 
-void write_last_bpm_flash_high(int32_t *data, int32_t time) {
-    data[BPM_STROBE_LAST_TICK_HIGH_INDEX] = time;
-}
+#define CUE_RIGHT_STATUS 145
+#define CUE_RIGHT_KIND 84
+#define COLOR_ACTIVE_INDEX 196
 
-int since_last_bpm_flash(int32_t *data, int32_t time) {
-    return elapsed(time, data, BPM_STROBE_LAST_TICK_INDEX);
-}
+#define RELEASE_FX_STATUS 148
+#define RELEASE_FX_KIND 71
+
+#define LEFT_FILTER_STATUS 182
+#define LEFT_FILTER_KIND 23
+#define STROBE_SPEED_MULTIPLIER_KEY 193
+
+#define COLOR_TO_MUSIC_INDEX 192
+#define PERFORMANCE_RIGHT_0_0_STATUS 153
+#define PERFORMANCE_RIGHT_0_0_KIND 0
+
+#define RELOOP_LEFT_STATUS 144
+#define RELOOP_LEFT_KIND 77
+// #define BPM_INDICATOR_ACTIVE_INDEX 191
+
+#define INIT_TIME_INDEX 191
+
+int elapsed(int32_t time, int32_t *data, int32_t index) { return time - data[index]; }
+
+void write_last_bpm_flash(int32_t *data, int32_t time) { data[BPM_STROBE_LAST_TICK_INDEX] = time; }
+
+void write_last_bpm_flash_high(int32_t *data, int32_t time) { data[BPM_STROBE_LAST_TICK_HIGH_INDEX] = time; }
+
+int since_last_bpm_flash(int32_t *data, int32_t time) { return elapsed(time, data, BPM_STROBE_LAST_TICK_INDEX); }
 
 int since_last_bpm_flash_high(int32_t *data, int32_t time) {
     return elapsed(time, data, BPM_STROBE_LAST_TICK_HIGH_INDEX);
 }
 
-void set_white(int v, uint8_t * dmx) {
-    dmx[1] = v;
-    dmx[2] = v;
-    dmx[3] = v;
-    dmx[4] = v;
+void set_white(bool v, uint8_t *dmx, int32_t *data) {
+    int32_t brightness = data[FLASH_BRIGHTNESS_KEY];
 
-    dmx[100] = v;
-    dmx[101] = v;
-    dmx[102] = v;
+    dmx[1] = brightness;
+    dmx[2] = v * 255;
+    dmx[3] = v * 255;
+    dmx[4] = v * 255;
+
+    dmx[100] = brightness * v;
+    dmx[101] = brightness * v;
+    dmx[102] = brightness * v;
 }
 
 // int pow(int base, int exp) {
@@ -59,50 +89,142 @@ void set_white(int v, uint8_t * dmx) {
 //     return acc;
 // }
 
-long map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max) {
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+void set_left_cue(int32_t *data, bool enabled) {
+    data[STROBE_ACTIVE_INDEX] = enabled;
+    int toggled = 0x7F * enabled;
+    bl_midi(CUE_LEFT_STATUS, CUE_LEFT_KIND, toggled);
 }
 
-// Convert HSV hue (0–360) to RGB
-void hsv_to_rgb(int32_t h, int32_t *r, int32_t *g, int32_t *b) {
-    float s = 1.0f;
-    float v = 1.0f;
-    float c = v * s;
-    float x = c * (1 - abs((h / 60 % 2) - 1));
-    float m = v - c;
+void toggle_left_cue(int32_t *data) { set_left_cue(data, !data[STROBE_ACTIVE_INDEX]); }
 
-    float rf = 0, gf = 0, bf = 0;
+void set_right_cue(int32_t *data, bool enabled) {
+    // dmx[1] = 255;
+    // dmx[2] = 255;
+    data[COLOR_ACTIVE_INDEX] = enabled;
+    int toggled = 0x7F * enabled;
+    bl_midi(CUE_RIGHT_STATUS, CUE_RIGHT_KIND, toggled);
+}
 
-    if (h < 60) {
-        rf = c; gf = x; bf = 0;
-    } else if (h < 120) {
-        rf = x; gf = c; bf = 0;
-    } else if (h < 180) {
-        rf = 0; gf = c; bf = x;
-    } else if (h < 240) {
-        rf = 0; gf = x; bf = c;
-    } else if (h < 300) {
-        rf = x; gf = 0; bf = c;
-    } else {
-        rf = c; gf = 0; bf = x;
+void toggle_right_cue(int32_t *data) { set_right_cue(data, !data[COLOR_ACTIVE_INDEX]); }
+
+void set_right_performace_0_0(int32_t *data, bool enabled) {
+    data[COLOR_TO_MUSIC_INDEX] = enabled;
+    int color = 0x7F * enabled;
+    bl_midi(PERFORMANCE_RIGHT_0_0_STATUS, PERFORMANCE_RIGHT_0_0_KIND, color);
+}
+
+void toggle_right_performance_0_0(int32_t *data) { set_right_performace_0_0(data, !data[COLOR_TO_MUSIC_INDEX]); }
+
+void midi(uint8_t status, uint8_t data0, uint8_t data1, int32_t data_array, int32_t data_len) {
+    bl_puts("MIDI: ");
+    bl_log_int(status);
+    bl_log_int(data0);
+    bl_log_int(data1);
+}
+
+void set_left_vol_slider(int32_t *data, uint8_t midi_value) {
+    data[FLASH_BRIGHTNESS_KEY] = map(midi_value, 0, 127, 0, 255);
+}
+
+void set_right_vol_slider(int32_t *data, uint8_t midi_value) {
+    data[NORMAL_BRIGHTNESS_KEY] = map(midi_value, 0, 127, 0, 255);
+}
+
+void set_left_filter(int32_t *data, uint8_t midi_value) {
+    int mapped = map(midi_value, 0, 127, -4, 2);
+    if (mapped == -3) {
+        mapped = -2;
+    }
+    data[STROBE_SPEED_MULTIPLIER_KEY] = mapped;
+    bl_log_int(data[STROBE_SPEED_MULTIPLIER_KEY]);
+}
+
+void initialize(TickInput input, uint8_t *dmx_array, int32_t dmx_len, int32_t *data, int32_t data_len) {
+    bl_puts("WASM: Initialized was called.");
+    dmx_array[1] = 50;
+    dmx_array[2] = 255;
+
+    data[FLASH_BRIGHTNESS_KEY] = 255;
+    data[NORMAL_BRIGHTNESS_KEY] = 255;
+
+    set_left_cue(data, 1);
+    set_left_vol_slider(data, 127);
+
+    set_right_cue(data, 1);
+    set_right_vol_slider(data, 127);
+
+    set_left_filter(data, 64); // Maps to 0.
+    set_right_performace_0_0(data, 1);
+
+    bl_midi(RELOOP_LEFT_STATUS, RELOOP_LEFT_KIND, 127);
+
+    data[INIT_TIME_INDEX] = input.time;
+}
+
+void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t data_len, MidiEvent *midi,
+          int32_t midi_len) {
+
+    int init_delta = input.time - data[INIT_TIME_INDEX];
+    if (init_delta > 1000 && init_delta < 2000) {
+        bl_midi(RELOOP_LEFT_STATUS, RELOOP_LEFT_KIND, 0);
     }
 
-    *r = (int32_t)((rf + m) * 255);
-    *g = (int32_t)((gf + m) * 255);
-    *b = (int32_t)((bf + m) * 255);
-}
+    // Volume indicators.
+    int volume_value = map(input.volume, 0, 150, 0, 127);
+    bl_midi(0xb1, 02, volume_value);
 
-void initialize(TickInput input, uint8_t *dmx_array, int32_t dmx_len) {
-    bl_puts("WASM: Initialized was called.");
-}
+    // BPM modifier indicators.
+    int bpm_modifier = 0;
+    if (data[STROBE_SPEED_MULTIPLIER_KEY] < 0) {
+        bpm_modifier = map(abs(data[STROBE_SPEED_MULTIPLIER_KEY]), 1, 4, 60, 110);
+    } else if (data[STROBE_SPEED_MULTIPLIER_KEY] > 0) {
+        bpm_modifier = map(abs(data[STROBE_SPEED_MULTIPLIER_KEY]), 1, 2, 60, 70);
+    } else if (data[STROBE_SPEED_MULTIPLIER_KEY] == 0) {
+        bpm_modifier = map(1, 1, 2, 60, 70);
+    }
+    bl_midi(0xb0, 02, bpm_modifier);
 
-void tick(
-    TickInput input,
-    uint8_t *dmx, int32_t dmx_len,
-    int32_t *data, int32_t data_len
-) {
+    for (int i = 0; i < midi_len; i++) {
+        if (midi[i].status == CROSSFADER_STATUS && midi[i].kind == CROSSFADER_KIND) {
+            data[CROSSFADER_KEY] = midi[i].value;
+            int hue = map(data[CROSSFADER_KEY], 0, 127, 0, 360);
+            data[150] = hue;
+        } else if (midi[i].status == LEFT_FADER_STATUS && midi[i].kind == LEFT_FADER_KIND) {
+            set_left_vol_slider(data, midi[i].value);
+        } else if (midi[i].status == RIGHT_FADER_STATUS && midi[i].kind == RIGHT_FADER_KIND) {
+            set_right_vol_slider(data, midi[i].value);
+            // bl_log_int(data[NORMAL_BRIGHTNESS_KEY]);
+        } else if (midi[i].status == CUE_RIGHT_STATUS && midi[i].kind == CUE_RIGHT_KIND) {
+            if (midi[i].value == 127) {
+                toggle_right_cue(data);
+            }
+        } else if (midi[i].status == CUE_LEFT_STATUS && midi[i].kind == CUE_LEFT_KIND) {
+            if (midi[i].value == 127) {
+                toggle_left_cue(data);
+            }
+        } else if (midi[i].status == RELEASE_FX_STATUS && midi[i].kind == RELEASE_FX_KIND) {
+            if (midi[i].value == 127) {
+                toggle_left_cue(data);
+                toggle_right_cue(data);
+            }
+        } else if (midi[i].status == LEFT_FILTER_STATUS && midi[i].kind == LEFT_FILTER_KIND) {
+            set_left_filter(data, midi[i].value);
+        } else if (midi[i].status == PERFORMANCE_RIGHT_0_0_STATUS && midi[i].kind == PERFORMANCE_RIGHT_0_0_KIND) {
+            if (midi[i].value == 127) {
+                toggle_right_performance_0_0(data);
+            }
+        } else {
+            bl_puts("==========");
+            bl_log_int(midi[i].status);
+            bl_log_int(midi[i].kind);
+            bl_log_int(midi[i].value);
+        }
+    }
+
+    // return;
+
     // --- Rainbow RGB effect ---
-    if (since_last_bpm_flash(data, input.time) > 1000) {
+    if (since_last_bpm_flash(data, input.time) > 1000 || data[COLOR_ACTIVE_INDEX]) {
         int hue = data[150]; // persistent hue
         int r, g, b;
         hsv_to_rgb(hue, &r, &g, &b);
@@ -112,7 +234,13 @@ void tick(
         g = g;
         b = b;
 
-        dmx[1] = input.volume;
+        int input_volume = input.volume;
+        if (!data[COLOR_TO_MUSIC_INDEX]) {
+            input_volume = 255;
+        }
+        int volume_to_brightness = map(input_volume, 0, 150, 0, data[NORMAL_BRIGHTNESS_KEY]);
+
+        dmx[1] = volume_to_brightness;
         dmx[2] = r;
         dmx[3] = g;
         dmx[4] = b;
@@ -122,15 +250,22 @@ void tick(
         //     hue = (hue + 1) % 360;
         //     data[150] = hue;
         // }
+
+        // if (midi_len > 0) {
+        //     hue = (hue + 1) % 360;
+        //     data[150] = hue;
+
+        //     bl_puts("HUE: MIDI EVENTS:");
+        //     bl_log_int(midi_len);
+        // }
     }
 
     // --- Audio-reactive white strobe ---
     int time_since_strobe_start = elapsed(input.time, data, STROBE_START_INDEX);
 
-    if (
-        (input.bass_avg < 50 && input.bass > 100 && !data[IS_STROBE_INDEX]) ||
-        (time_since_strobe_start < STROBE_TIME && data[IS_STROBE_INDEX]) &&
-        input.volume > 150) {
+    if (data[STROBE_ACTIVE_INDEX] &&
+        ((input.bass_avg < 50 && input.bass > 100 && !data[IS_STROBE_INDEX]) ||
+         (time_since_strobe_start < STROBE_TIME && data[IS_STROBE_INDEX]) && input.volume > 150)) {
         if (!data[IS_STROBE_INDEX]) {
             data[STROBE_START_INDEX] = input.time;
         }
@@ -138,11 +273,11 @@ void tick(
         data[WHITE_VALUE_INDEX] = data[IS_WHITE_VALUE_INDEX] ? 0 : 255;
         data[IS_WHITE_VALUE_INDEX] = !data[IS_WHITE_VALUE_INDEX];
 
-        set_white(data[WHITE_VALUE_INDEX], dmx);
+        set_white(data[IS_WHITE_VALUE_INDEX], dmx, data);
         // bl_puts("Entered strobe branch.");
         return;
     } else if (data[IS_WHITE_VALUE_INDEX]) {
-        set_white(0, dmx);
+        set_white(0, dmx, data);
         data[IS_WHITE_VALUE_INDEX] = 0;
         data[IS_STROBE_INDEX] = 0;
     }
@@ -150,24 +285,34 @@ void tick(
     // --- BPM-based strobe ---
     int elapsed = since_last_bpm_flash(data, input.time);
     int bpm = input.bpm;
-    int target_elapsed_bpm = (int)((1.0 / (float)bpm) * 60.0 * 1000.0 * 1.0);
+
+    float multiplier = 1.0;
+    if (data[STROBE_SPEED_MULTIPLIER_KEY] < 0) {
+        multiplier = (float)(-data[STROBE_SPEED_MULTIPLIER_KEY]);
+    } else if (data[STROBE_SPEED_MULTIPLIER_KEY] > 0) {
+        multiplier = 1.0 / ((float)data[STROBE_SPEED_MULTIPLIER_KEY]);
+    }
+
+    int target_elapsed_bpm = (int)((1.0 / (float)bpm) * 60.0 * 1000.0 * multiplier);
 
     if (input.bass_avg < 100 && input.bass < 100) {
         if (data[IS_WHITE_VALUE_INDEX]) {
             bl_puts("Entered set-dark branch.");
             data[WHITE_VALUE_INDEX] = 0;
             data[IS_WHITE_VALUE_INDEX] = 0;
-            set_white(data[WHITE_VALUE_INDEX], dmx);
+            set_white(data[IS_WHITE_VALUE_INDEX], dmx, data);
         }
-    } else if (elapsed > target_elapsed_bpm && !data[IS_WHITE_VALUE_INDEX]) {
-        write_last_bpm_flash(data, input.time);
-        data[IS_WHITE_VALUE_INDEX] = 1;
-        data[WHITE_VALUE_INDEX] = 255;
-        set_white(data[WHITE_VALUE_INDEX], dmx);
-    } else if (data[IS_WHITE_VALUE_INDEX]) {
-        write_last_bpm_flash_high(data, input.time);
-        data[WHITE_VALUE_INDEX] = 0;
-        data[IS_WHITE_VALUE_INDEX] = 0;
-        set_white(data[WHITE_VALUE_INDEX], dmx);
+    } else if (data[STROBE_ACTIVE_INDEX]) {
+        if (elapsed > target_elapsed_bpm && !data[IS_WHITE_VALUE_INDEX]) {
+            write_last_bpm_flash(data, input.time);
+            data[IS_WHITE_VALUE_INDEX] = 1;
+            data[WHITE_VALUE_INDEX] = 255;
+            set_white(data[IS_WHITE_VALUE_INDEX], dmx, data);
+        } else if (data[IS_WHITE_VALUE_INDEX]) {
+            write_last_bpm_flash_high(data, input.time);
+            data[WHITE_VALUE_INDEX] = 0;
+            data[IS_WHITE_VALUE_INDEX] = 0;
+            set_white(data[IS_WHITE_VALUE_INDEX], dmx, data);
+        }
     }
 }

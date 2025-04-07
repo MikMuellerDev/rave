@@ -1,10 +1,9 @@
 #pragma once
-#pragma clang diagnostic ignored "-Wunknown-attributes"
+// #pragma clang diagnostic ignored "-Wunknown-attributes"
 
 #include "defs.h"
+#include "imports.h"
 
-// Call to interpreter to log a string at the specified pointer with specified length
-void bl_log(char *ptr, size_t num_bytes) __attribute__((__import_module__("blaulicht"), __import_name__("log"), ));
 
 // Logs a NULL-terminated string
 void bl_puts(char *message);

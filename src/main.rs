@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context};
 use blaulicht::audio::AudioThreadControlSignal;
 use blaulicht::routes::AppState;
 use blaulicht::wasm::TickInput;
-use blaulicht::{config, dmx, routes, wasm};
+use blaulicht::{config, dmx, midi, routes, wasm};
 use env_logger::Env;
 use log::info;
 
@@ -108,6 +108,11 @@ async fn main() -> anyhow::Result<()> {
             )
         });
     }
+
+    //
+    // Begin MIDI.
+    //
+
     //
     // End audio.
     //
