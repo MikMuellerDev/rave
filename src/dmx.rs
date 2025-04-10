@@ -1,4 +1,5 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use enttecopendmx::EnttecOpenDMX;
 use std::{
     mem,
     net::UdpSocket,
@@ -99,10 +100,7 @@ impl DmxUniverse {
         // let mut wasm_engine = wasm::TickEngine::create(midi_out).unwrap();
         let base = DmxUniverseBasic::new(midi_out, system_out);
 
-        Self::Real(DmxUniverseReal::new(
-            port_path,
-            base,
-        ))
+        Self::Real(DmxUniverseReal::new(port_path, base))
     }
 
     pub fn new_dummy(midi_out: Sender<(u8, u8, u8)>, system_out: Sender<SystemMessage>) -> Self {
@@ -167,7 +165,8 @@ impl Color {
 }
 
 struct DmxUniverseReal {
-    serial: Box<dyn SerialPort>,
+    // serial: Box<dyn SerialPort>,
+    dmx: EnttecOpenDMX,
     base: DmxUniverseBasic,
 }
 
@@ -178,17 +177,23 @@ impl DmxUniverseReal {
         // system_out: Sender<SystemMessage>,
         base: DmxUniverseBasic,
     ) -> Self {
-        let serial = serialport::new(port_path, 250000)
-            .timeout(Duration::from_millis(1))
-            .stop_bits(serialport::StopBits::Two)
-            .data_bits(serialport::DataBits::Eight)
-            .parity(serialport::Parity::None)
-            .open()
-            .expect("Failed to open port");
+        // let serial = serialport::new(port_path, 250000)
+        //     .timeout(Duration::from_millis(1))
+        //     .stop_bits(serialport::StopBits::Two)
+        //     .data_bits(serialport::DataBits::Eight)
+        //     .parity(serialport::Parity::None)
+        //     .open()
+        //     .expect("Failed to open port");
+
+        let mut interface = enttecopendmx::EnttecOpenDMX::new().unwrap();
+        interface.open().unwrap();
 
         // let base = DmxUniverseBasic::new(midi_out, system_out);
 
-        Self { serial, base }
+        Self {
+            dmx: interface,
+            base,
+        }
     }
 
     fn reload(&mut self) -> wasmtime::Result<()> {
@@ -214,17 +219,21 @@ impl DmxUniverseReal {
         Ok(duration)
     }
 
-    fn send_break(&self, duration: Duration) {
-        self.serial.set_break().expect("Failed to set break");
-        spin_sleep::sleep(duration);
-        self.serial.clear_break().expect("Failed to clear break");
-    }
+    // fn send_break(&self, duration: Duration) {
+    //     self.serial.set_break().expect("Failed to set break");
+    //     spin_sleep::sleep(duration);
+    //     self.serial.clear_break().expect("Failed to clear break");
+    // }
 
     fn write_to_serial(&mut self) {
-        self.send_break(Duration::from_micros(100));
-        spin_sleep::sleep(Duration::from_micros(100));
-        self.serial.write_all(&self.base.channels).unwrap();
-        self.serial.flush().unwrap();
+        // interface.set_channel(1 as usize, 255 as u8);
+        self.dmx.set_buffer(self.base.channels);
+        self.dmx.render().unwrap();
+
+        // self.send_break(Duration::from_micros(100));
+        // spin_sleep::sleep(Duration::from_micros(100));
+        // self.serial.write_all(&self.base.channels).unwrap();
+        // self.serial.flush().unwrap();
     }
 }
 
