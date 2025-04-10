@@ -8,6 +8,8 @@ void bl_log(char *ptr, size_t num_bytes) __attribute__((__import_module__("blaul
 
 void bl_midi(uint8_t status, uint8_t data0, uint8_t data1) __attribute__((__import_module__("blaulicht"), __import_name__("midi"), ));
 
+// void bl_reload() __attribute__((__import_module__("blaulicht"), __import_name__("reload"), ));
+
 //
 // Wasm imports used only by Reef C std code, not user code
 //

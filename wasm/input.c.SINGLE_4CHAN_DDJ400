@@ -195,7 +195,7 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
             set_left_vol_slider(data, midi[i].value);
         } else if (midi[i].status == RIGHT_FADER_STATUS && midi[i].kind == RIGHT_FADER_KIND) {
             set_right_vol_slider(data, midi[i].value);
-            // bl_log_int(data[NORMAL_BRIGHTNESS_KEY]);
+            bl_log_int(data[NORMAL_BRIGHTNESS_KEY]);
         } else if (midi[i].status == CUE_RIGHT_STATUS && midi[i].kind == CUE_RIGHT_KIND) {
             if (midi[i].value == 127) {
                 toggle_right_cue(data);
@@ -237,9 +237,11 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
         b = b;
 
         int input_volume = input.volume;
+
         if (!data[COLOR_TO_MUSIC_INDEX]) {
-            input_volume = 255;
+            input_volume = 150;
         }
+
         int volume_to_brightness = map(input_volume, 0, 150, 0, data[NORMAL_BRIGHTNESS_KEY]);
 
         dmx[1] = volume_to_brightness;

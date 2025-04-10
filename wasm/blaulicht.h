@@ -64,3 +64,4 @@ void hsv_to_rgb(int32_t h, int32_t *r, int32_t *g, int32_t *b);
 
 int32_t abs(int32_t x);
 double fabs(double x);
+double bl_pow(double base, int exponent);

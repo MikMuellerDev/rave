@@ -86,6 +86,7 @@ pub enum WSSignalKind {
     Bass,
     BassAvg,
     Volume,
+    DMX,
 }
 
 #[derive(Serialize)]
@@ -196,6 +197,10 @@ impl From<SystemMessage> for WSSystemMessage {
                 )
                 .unwrap(),
             },
+            SystemMessage::DMX(chans) => Self {
+                kind: WSSystemMessageKind::Dmx,
+                value: serde_json::to_value(chans.to_vec()).unwrap(),
+            }
         }
     }
 }

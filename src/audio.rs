@@ -162,7 +162,7 @@ impl Converter {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Debug)]
+#[derive(Clone, Serialize, Debug)]
 pub enum Signal {
     Bpm(u8),
     BeatVolume(u8),
@@ -183,6 +183,8 @@ pub enum SystemMessage {
     // Serial.
     SerialSelected(Option<SerialPortInfo>),
     SerialDevicesView(Vec<SerialPortInfo>),
+    // DMX.
+    DMX([u8; 513]),
 }
 
 const ROLLING_AVERAGE_LOOP_ITERATIONS: usize = 100;
@@ -208,8 +210,8 @@ macro_rules! signal {
     ($now:ident,$last_publish:ident,$out0:ident,$dmx:ident,$tx_signal:expr) => {
         if $now - $last_publish > SIGNAL_SPEED {
             for signal in $tx_signal {
-                $out0.send(*signal).unwrap();
-                $dmx.signal(*signal);
+                $out0.send(signal.clone()).unwrap();
+                $dmx.signal(signal.clone());
             }
             $last_publish = $now;
         }
@@ -315,7 +317,26 @@ pub fn run(
     println!("Creating midi...");
     let (midi_in_sender, midi_in_receiver) = crossbeam_channel::bounded(100);
     let (midi_out_sender, midi_out_receiver) = crossbeam_channel::bounded(10);
-    midi::midi(midi_in_sender, midi_out_receiver);
+
+    thread::spawn(move || {
+        loop {
+            match midi::midi(midi_in_sender.clone(), midi_out_receiver.clone()) {
+                Ok(_) => panic!("Unreachable."),
+                Err(err) => { 
+                    eprintln!("MIDI thread chrashed! {err:?}");
+                    break;
+                },
+            }
+        }
+
+        loop {
+            thread::sleep(Duration::from_millis(50));
+            match midi_out_receiver.try_recv() {
+                Ok(midi) => println!("MIDI recv: {midi:?}"),
+                Err(err) => panic!("{err}"),
+            }
+        }
+    });
 
     let mut dmx_universe = match serial_port {
         Some(port) => {
@@ -324,9 +345,12 @@ pub fn run(
             system_out
                 .send(SystemMessage::SerialSelected(Some(port.clone())))
                 .unwrap();
-            DmxUniverse::new(serial_port_name, signal_out_0.clone(), midi_out_sender)
+            DmxUniverse::new(serial_port_name, signal_out_0.clone(), midi_out_sender, system_out.clone())
         }
-        None => DmxUniverse::new_dummy(),
+        None => DmxUniverse::new_dummy(
+            midi_out_sender,
+            system_out.clone(),
+        ),
     };
 
     // Energy saving.
@@ -397,16 +421,6 @@ pub fn run(
         let loop_speed = now - loop_begin_time;
         loop_begin_time = now;
 
-        // system_message!(
-        //     now,
-        //     time_of_last_system_publish,
-        //     system_out,
-        //     {
-        //         // println!("speed={}", loop_speed.as_micros());
-        //         &[SystemMessage::LoopSpeed(loop_speed)]
-        //     }
-        // );
-
         // Constant tick.
         if now.duration_since(time_of_last_dmx_tick) > DMX_TICK_TIME {
             // Check for MIDI signals.
@@ -415,25 +429,25 @@ pub fn run(
                 match midi_in_receiver.try_recv() {
                     Ok(data) => midi.push(data),
                     Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => panic!("error"),
+                    Err(TryRecvError::Disconnected) => break,
                 }
             }
 
-            // if midi.len() > 0 {
-            //     println!("MIDI MSGS: {}", midi.len());
-            // }
-
-            let dmx_tick_duration = dmx_universe.tick(&midi);
+            let dmx_tick_duration = match dmx_universe.tick(&midi) {
+                Ok(dur) => dur,
+                Err(err) => {
+                    eprintln!("[WASM] Engine crash: {err}");
+                    Duration::from_micros(0)
+                }
+            };
             time_of_last_dmx_tick = now;
 
             system_message!(now, time_of_last_system_publish, system_out, {
-                // println!("speed={}", loop_speed.as_micros());
                 &[
                     SystemMessage::TickSpeed(dmx_tick_duration),
                     SystemMessage::LoopSpeed(loop_speed),
                 ]
             });
-            // println!("tick.");
         }
 
         /////////////////// Signal Begin ///////////////

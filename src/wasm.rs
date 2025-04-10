@@ -1,8 +1,3 @@
-//! Small example of how to instantiate a wasm module that imports one function,
-//! showing how you can fill in host functionality for a wasm module.
-
-// You can execute this example with `cargo run --example hello`
-
 use crossbeam_channel::Sender;
 use std::time::{Instant, UNIX_EPOCH};
 
@@ -29,7 +24,7 @@ pub struct TickInput {
 impl TickInput {
     fn serialize(&self, timer_start: Instant, initial: bool) -> [i32; 7] {
         [
-            Instant::now().duration_since(timer_start).as_millis() as i32, // Time.
+            Instant::now().duration_since(timer_start).as_millis() as i32,
             self.volume.into(),
             self.beat_volume.into(),
             self.bass.into(),
@@ -37,6 +32,18 @@ impl TickInput {
             self.bpm.into(),
             initial as i32,
         ]
+    }
+}
+
+impl Default for TickInput {
+    fn default() -> Self {
+        Self {
+            volume: 0,
+            beat_volume: 0,
+            bass: 0,
+            bass_avg: 0,
+            bpm: 0,
+        }
     }
 }
 
@@ -52,7 +59,6 @@ pub struct WasmEngine {
     store: Store<MyState>,
     instance: Instance,
     memory: Memory,
-    // midi_out: SyncSender<(u8, u8, u8)>,
 }
 
 impl TickEngine {
@@ -76,23 +82,13 @@ impl TickEngine {
     }
 
     fn init_wasm(&mut self) -> Result<()> {
-        // First the wasm module needs to be compiled. This is done with a global
-        // "compilation environment" within an `Engine`. Note that engines can be
-        // further configured through `Config` if desired instead of using the
-        // default like this is here.
-        println!("Compiling module...");
         let mut config = Config::new();
         config.strategy(wasmtime::Strategy::Cranelift);
-        config.cranelift_opt_level(wasmtime::OptLevel::Speed); // Use `SpeedAndSize` for balance
+        config.cranelift_opt_level(wasmtime::OptLevel::Speed);
 
         let engine = Engine::new(&config)?;
         let module = Module::from_file(&engine, "./wasm/output.wasm")?;
 
-        // After a module is compiled we create a `Store` which will contain
-        // instantiated modules and other items like host functions. A Store
-        // contains an arbitrary piece of host information, and we use `MyState`
-        // here.
-        println!("Initializing...");
         let mut store = Store::new(
             &engine,
             MyState {
@@ -103,67 +99,36 @@ impl TickEngine {
 
         let mut linker = Linker::new(&engine);
 
-        // Our wasm module we'll be instantiating requires one imported function.
-        // the function takes no parameters and returns no results. We create a host
-        // implementation of that function here, and the `caller` parameter here is
-        // used to get access to our original `MyState` value.
-        println!("Creating callback...");
-        linker
-            .func_wrap(
-                "blaulicht",
-                "log",
-                |mut caller: Caller<'_, MyState>, str_pointer: i32, str_len: i32| {
-                    // println!("TRIGGERED CALLBACK");
-                    // println!("> {}", caller.data().name);
-                    // caller.data_mut().count += 1;
+        linker.func_wrap(
+            "blaulicht",
+            "log",
+            |mut caller: Caller<'_, MyState>, str_pointer: i32, str_len: i32| {
+                let memory = caller
+                    .get_export("memory")
+                    .and_then(|export| export.into_memory())
+                    .expect("Failed to find memory");
 
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(|export| export.into_memory())
-                        .expect("Failed to find memory");
+                let mut buffer = vec![0u8; str_len as usize];
+                memory
+                    .read(&caller, str_pointer as usize, &mut buffer)
+                    .expect("Failed to read memory");
 
-                    // Read `len` bytes from memory starting at `ptr`
-                    let mut buffer = vec![0u8; str_len as usize];
-                    memory
-                        .read(&caller, str_pointer as usize, &mut buffer)
-                        .expect("Failed to read memory");
-
-                    // Convert bytes to a String
-                    let received_string = String::from_utf8_lossy(&buffer).to_string();
-                    println!("[WASM] {received_string}");
-                },
-            )
-            .unwrap();
-        // let log_function = Func::wrap(
-        // );
+                let received_string = String::from_utf8_lossy(&buffer).to_string();
+                println!("[WASM] {received_string}");
+            },
+        )?;
 
         let mo = self.midi_out.clone();
-        let midi_function = linker
-            .func_wrap(
-                "blaulicht",
-                "midi",
-                move |status: i32, kind: i32, value: i32| {
-                    // println!("TRIGGERED CALLBACK");
-                    // println!("> {}", caller.data().name);
-                    // caller.data_mut().count += 1;
+        linker.func_wrap(
+            "blaulicht",
+            "midi",
+            move |status: i32, kind: i32, value: i32| {
+                mo.send((status as u8, kind as u8, value as u8)).unwrap();
+            },
+        )?;
 
-                    // println!("[WASM] MIDI: {status}: {kind}: {value}");
-                    mo.send((status as u8, kind as u8, value as u8)).unwrap();
-                },
-            )
-            .unwrap();
-
-        // Once we've got that all set up we can then move to the instantiation
-        // phase, pairing together a compiled module as well as a set of imports.
-        // Note that this is where the wasm `start` function, if any, would run.
-        println!("Instantiating module...");
         let instance = linker.instantiate(&mut store, &module)?;
 
-        // Next we poke around a bit to extract the `run` function from the module.
-        println!("Extracting export...");
-
-        /// START
-        // Get memory reference
         let memory = instance
             .get_memory(&mut store, "memory")
             .expect("Memory not found");

@@ -1,11 +1,18 @@
-use std::{
-    mem, net::UdpSocket, sync::{
-        atomic::{AtomicU8, Ordering},  Arc
-    }, thread, time::{Duration, Instant}, vec
-};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use std::{
+    mem,
+    net::UdpSocket,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+    vec,
+};
 
 use crate::{
+    midi,
     utils::device_from_name,
     wasm::{self, TickEngine, TickInput},
     ToFrontent,
@@ -21,51 +28,105 @@ use crate::{
     utils,
 };
 
+struct DmxUniverseBasic {
+    tick_engine: TickEngine,
+    channels: [u8; 513],
+    tickinput: TickInput,
+    system_out: Sender<SystemMessage>,
+}
+
+impl DmxUniverseBasic {
+    fn new(midi_out: Sender<(u8, u8, u8)>, system_out: Sender<SystemMessage>) -> Self {
+        let tick_engine = wasm::TickEngine::create(midi_out).unwrap();
+
+        Self {
+            tick_engine,
+            channels: [0; 513],
+            tickinput: TickInput::default(),
+            system_out,
+        }
+    }
+
+    fn signal(&mut self, signal: Signal) {
+        match signal {
+            Signal::Volume(v) => {
+                self.tickinput.volume = v;
+            }
+            Signal::BeatVolume(v) => {
+                self.tickinput.beat_volume = v;
+            }
+            Signal::Bass(v) => {
+                self.tickinput.bass = v;
+            }
+            Signal::BassAvg(v) => {
+                self.tickinput.bass_avg = v;
+            }
+            Signal::Bpm(v) => {
+                self.tickinput.bpm = v;
+            }
+        }
+    }
+
+    fn tick(&mut self, midi: &[(u8, u8, u8)]) -> anyhow::Result<Duration> {
+        let start = Instant::now();
+        self.tick_engine.tick(self.tickinput, &midi, false)?;
+
+        for (index, value) in self.tick_engine.dmx().iter().enumerate() {
+            self.channels[index] = *value as u8;
+        }
+
+        let elapsed = Instant::now().duration_since(start);
+        Ok(elapsed)
+    }
+
+    fn reload(&mut self) -> wasmtime::Result<()> {
+        self.tick_engine.reload()
+    }
+}
+
 pub enum DmxUniverse {
-    Dummy,
+    Dummy(DmxUniverseBasic),
     Real(DmxUniverseReal),
 }
 
 impl DmxUniverse {
-    pub fn new(port_path: String, signal_out: Sender<Signal>, midi_out: Sender<(u8, u8, u8)>) -> Self {
-        //
-        // WASM engine.
-        //
+    pub fn new(
+        port_path: String,
+        signal_out: Sender<Signal>,
+        midi_out: Sender<(u8, u8, u8)>,
+        system_out: Sender<SystemMessage>,
+    ) -> Self {
+        // let mut wasm_engine = wasm::TickEngine::create(midi_out).unwrap();
+        let base = DmxUniverseBasic::new(midi_out, system_out);
 
-        let mut wasm_engine = wasm::TickEngine::create(midi_out).unwrap();
-
-        // wasm_engine.tick(TickInput {
-        //     volume: 0,
-        //     beat_volume: 0,
-        //     bass: 0,
-        //     bass_avg: 0,
-        //     bpm: 0,
-        // }, &[], true).unwrap();
-
-        Self::Real(DmxUniverseReal::new(port_path, signal_out, wasm_engine))
+        Self::Real(DmxUniverseReal::new(
+            port_path,
+            base,
+        ))
     }
 
-    pub fn new_dummy() -> Self {
-        Self::Dummy
+    pub fn new_dummy(midi_out: Sender<(u8, u8, u8)>, system_out: Sender<SystemMessage>) -> Self {
+        let base = DmxUniverseBasic::new(midi_out, system_out);
+        Self::Dummy(base)
     }
 
     pub fn signal(&mut self, signal: Signal) {
         match self {
-            DmxUniverse::Dummy => {}
+            DmxUniverse::Dummy(dummy) => dummy.signal(signal),
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.signal(signal),
         }
     }
 
-    pub fn tick(&mut self, midi: &[(u8, u8, u8)]) -> Duration {
+    pub fn tick(&mut self, midi: &[(u8, u8, u8)]) -> anyhow::Result<Duration> {
         match self {
-            DmxUniverse::Dummy => { Duration::new(0, 0) }
+            DmxUniverse::Dummy(dummy) => dummy.tick(midi),
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.tick(midi),
         }
     }
 
     pub fn reload(&mut self) -> wasmtime::Result<()> {
         match self {
-            DmxUniverse::Dummy => Ok (()),
+            DmxUniverse::Dummy(dummy) => dummy.reload(),
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.reload(),
         }
     }
@@ -106,25 +167,18 @@ impl Color {
 }
 
 struct DmxUniverseReal {
-    tick_engine: TickEngine,
-
-    signal_out: Sender<Signal>,
-
     serial: Box<dyn SerialPort>,
-    channels: [u8; 513],
-    // last_update: Instant,
-
-    // color_idx: u8,
-    // color_set_time: Instant,
-    // start_of_drop: Instant,
-    // bass_count: usize,
-    //socket: UdpSocket,
-    tickinput: TickInput,
+    base: DmxUniverseBasic,
 }
 
 impl DmxUniverseReal {
-    fn new(port_path: String, signal_out: Sender<Signal>, tick_engine: TickEngine) -> Self {
-        let port = serialport::new(port_path, 250000)
+    fn new(
+        port_path: String,
+        // signal_out: Sender<Signal>,
+        // system_out: Sender<SystemMessage>,
+        base: DmxUniverseBasic,
+    ) -> Self {
+        let serial = serialport::new(port_path, 250000)
             .timeout(Duration::from_millis(1))
             .stop_bits(serialport::StopBits::Two)
             .data_bits(serialport::DataBits::Eight)
@@ -132,133 +186,32 @@ impl DmxUniverseReal {
             .open()
             .expect("Failed to open port");
 
-        Self {
-            tick_engine,
-            signal_out,
-            serial: port,
-            channels: [0; 513],
-            // last_update: Instant::now(),
-            // color_idx: 0,
-            // color_set_time: Instant::now(),
-            tickinput: TickInput {
-                volume: 0,
-                beat_volume: 0,
-                bass: 0,
-                bass_avg: 0,
-                bpm: 0,
-            },
-        }
+        // let base = DmxUniverseBasic::new(midi_out, system_out);
+
+        Self { serial, base }
     }
 
     fn reload(&mut self) -> wasmtime::Result<()> {
-        self.tick_engine.reload()
+        self.base.reload()
     }
 
     fn signal(&mut self, signal: Signal) {
-        let start = Instant::now();
-        match signal {
-            Signal::Volume(v) => {
-                self.tickinput.volume = v;
-            }
-            Signal::BeatVolume(v) => {
-                self.tickinput.beat_volume = v;
-            }
-            Signal::Bass(v) => {
-                self.tickinput.bass = v;
-            }
-            Signal::BassAvg(v) => {
-                self.tickinput.bass_avg = v;
-            }
-            Signal::Bpm(v) => {
-                self.tickinput.bpm = v;
-            } // Signal::BeatVolume(volume) => {
-              //     // TODO: engine here
-              //     // return;
-              //     if volume >= 1 {
-              //         println!("V={volume}");
-              //         // self.channels[1] = volume / 10;
-
-              //         if self.color_set_time.elapsed().as_secs() > 10 {
-              //             self.color_set_time = Instant::now();
-              //             if self.color_idx == 5 {
-              //                 self.color_idx = 0;
-              //             } else {
-              //                 self.color_idx += 1;
-              //             }
-              //         }
-
-              //         let c = Color::from_index(self.color_idx).channels();
-              //         self.channels[1] = 255;
-              //         self.channels[2] = c[0];
-              //         self.channels[3] = c[1];
-              //         self.channels[4] = c[2];
-              //         self.write_to_serial();
-              //     } else {
-              //         self.channels[1] = 0;
-              //         self.write_to_serial();
-              //     }
-
-              //     // spin_sleep::sleep(Duration::from_millis(10));
-              // }
-              // // Signal::BeatAlgo(_) => {
-              // //     // return;
-              // //     self.channels[1] = 255;
-              // //     self.channels[2] = 255;
-              // //     self.channels[3] = 255;
-              // //     self.channels[4] = 255;
-              // //
-              // //     self.write_to_serial();
-              // //     spin_sleep::sleep(Duration::from_millis(10));
-              // //
-              // //     self.channels[1] = 0;
-              // //
-              // //     self.write_to_serial();
-              // // }
-              // Signal::Bass(v) => {
-              //     if v > 20 && self.last_update.elapsed().as_millis() > 100 {
-              //         const CHANNEL_OFFSET_STROBE: usize = 10;
-
-              //         self.last_update = Instant::now();
-              //         self.channels[1 + CHANNEL_OFFSET_STROBE - 1] = 255;
-              //         self.channels[2 + CHANNEL_OFFSET_STROBE - 1] = 255;
-              //         self.channels[3 + CHANNEL_OFFSET_STROBE - 1] = 255;
-              //         self.channels[4 + CHANNEL_OFFSET_STROBE - 1] = 255;
-              //         self.write_to_serial();
-              //         spin_sleep::sleep(Duration::from_millis(1));
-
-              //         self.channels[1 + CHANNEL_OFFSET_STROBE - 1] = 0;
-
-              //         self.write_to_serial();
-              //     }
-              // }
-              // Signal::Volume(v) => {
-              //     if v < 10 {
-              //         self.channels[1] = 30;
-              //         self.channels[2] = 255;
-              //         self.channels[3] = 0;
-              //         self.channels[4] = 255;
-
-              //         self.write_to_serial();
-              //     }
-              // }
-              // Signal::Bpm(_) => {}
-        }
+        self.base.signal(signal)
     }
 
-    pub fn tick(&mut self, midi: &[(u8 ,u8, u8)]) -> Duration {
-        let start = Instant::now();
-        self.tick_engine.tick(self.tickinput, &midi, false).unwrap();
+    pub fn tick(&mut self, midi: &[(u8, u8, u8)]) -> anyhow::Result<Duration> {
+        let duration = self.base.tick(midi)?;
 
-        for (index, value) in self.tick_engine.dmx().iter().enumerate() {
-            self.channels[index] = *value as u8;
-        }
-
-        let elapsed = Instant::now().duration_since(start);
-       // println!("DMX processing: {} micros", Instant::now().duration_since(start).as_micros());
+        // TODO: is this right?
+        // Only update on write?
+        self.base
+            .system_out
+            .send(SystemMessage::DMX(self.base.channels.clone()))
+            .unwrap();
 
         self.write_to_serial();
-        // println!("DMX write: {}", start.elapsed().as_micros())
-        elapsed
+
+        Ok(duration)
     }
 
     fn send_break(&self, duration: Duration) {
@@ -270,7 +223,7 @@ impl DmxUniverseReal {
     fn write_to_serial(&mut self) {
         self.send_break(Duration::from_micros(100));
         spin_sleep::sleep(Duration::from_micros(100));
-        self.serial.write_all(&self.channels).unwrap();
+        self.serial.write_all(&self.base.channels).unwrap();
         self.serial.flush().unwrap();
     }
 }
@@ -417,7 +370,8 @@ pub fn audio_thread(
 
         match from_frontend.try_recv() {
             Ok(FromFrontend::Reload) => {
-                audio_thread_control_signal.store(AudioThreadControlSignal::RELOAD, Ordering::Relaxed);
+                audio_thread_control_signal
+                    .store(AudioThreadControlSignal::RELOAD, Ordering::Relaxed);
                 // while (audio_thread_control_signal.load(Ordering::Relaxed) != AudioThreadControlSignal::DEAD) {
                 //     println!("waiting for audio thread to die...");
                 //     thread::sleep(Duration::from_millis(500));
