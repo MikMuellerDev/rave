@@ -191,7 +191,7 @@ const ROLLING_AVERAGE_LOOP_ITERATIONS: usize = 100;
 const ROLLING_AVERAGE_VOLUME_SAMPLE_SIZE: usize = ROLLING_AVERAGE_LOOP_ITERATIONS / 2;
 
 const SYSTEM_MESSAGE_SPEED: Duration = Duration::from_millis(1000);
-const SIGNAL_SPEED: Duration = Duration::from_millis(5);
+const SIGNAL_SPEED: Duration = Duration::from_millis(50);
 
 const DMX_TICK_TIME: Duration = Duration::from_millis(25);
 
@@ -211,9 +211,12 @@ macro_rules! signal {
         if $now - $last_publish > SIGNAL_SPEED {
             for signal in $tx_signal {
                 $out0.send(signal.clone()).unwrap();
-                $dmx.signal(signal.clone());
             }
             $last_publish = $now;
+        }
+
+        for signal in $tx_signal {
+            $dmx.signal(signal.clone());
         }
     };
 }
@@ -332,8 +335,9 @@ pub fn run(
         loop {
             thread::sleep(Duration::from_millis(50));
             match midi_out_receiver.try_recv() {
-                Ok(midi) => println!("MIDI recv: {midi:?}"),
-                Err(err) => panic!("{err}"),
+                Ok(midi) => { println!("MIDI recv: {midi:?}") },
+                Err(TryRecvError::Empty) => {},
+                Err(TryRecvError::Disconnected) => panic!("MIDI dender gone."),
             }
         }
     });
@@ -373,7 +377,7 @@ pub fn run(
     let mut long_historic = VecDeque::with_capacity(long_historic_frames);
     let mut historic = VecDeque::with_capacity(rolling_average_frames);
 
-    const BASS_FRAMES: usize = 800; // 800
+    const BASS_FRAMES: usize = 8000; // 800
     let mut bass_samples = VecDeque::with_capacity(BASS_FRAMES);
     let mut last_bass_udp_update = Instant::now();
 
@@ -594,7 +598,7 @@ pub fn run(
                 &[
                     Signal::Bass(sig),
                     Signal::Bpm(bpm as u8),
-                    Signal::BassAvg((bass_moving_average as u8)),
+                    Signal::BassAvg(bass_moving_average as u8),
                 ]
             }
         );

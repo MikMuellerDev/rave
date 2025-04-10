@@ -138,7 +138,8 @@
 
 // System.
 #define INIT_TIME_INDEX 100
-#define CURRENT_TIME_INDEX 101
+#define INIT_COMPLETE_INDEX 101
+#define CURRENT_TIME_INDEX 102
 
 // Strobe.
 #define IS_WHITE_VALUE_INDEX 202
@@ -191,6 +192,7 @@
 #define BEAT_HUE_ANIMATE_STEP_INDEX 309
 #define ANIMATE_TO_BEAT_ON_INDEX 310
 #define BEAT_ANIMATE_LAST_TICK_INDEX 311
+#define LAST_MIDI_WRITE_VOLUME_INDICATOR 312
 
 /////////////////////////////
 // END DATA ARRAY DEFINITION.
@@ -346,9 +348,23 @@ void set_white(bool v, uint8_t *dmx, int32_t *data) {
     }
 
     // Normal strobe lights definition here.
-    dmx[100] = brightness * v;
-    dmx[101] = brightness * v;
-    dmx[102] = brightness * v;
+    // dmx[100] = brightness * v;
+    // dmx[101] = brightness * v;
+    // dmx[102] = brightness * v;
+
+    dmx[21] = brightness * v;
+    dmx[22] = 255;
+    dmx[23] = 255;
+    dmx[24] = 255;
+
+    dmx[177] = 255;
+    dmx[178] = 255;
+    dmx[179] = 255;
+    dmx[180] = brightness * v;
+
+    dmx[201] = brightness * v;
+    dmx[202] = brightness * v;
+    dmx[203] = brightness * v;
 }
 
 void set_left_cue(int32_t *data, bool enabled) {
@@ -559,6 +575,11 @@ void initialize(TickInput input, uint8_t *dmx_array, int32_t dmx_len, int32_t *d
 
     // Default: auto strobe on.
     set_left_performace_2_1(data, 1);
+
+    data[LAST_MIDI_WRITE_VOLUME_INDICATOR] = 0;
+    
+    data[STROBE_BEGIN_TIME] = input.time;
+    data[STROBE_WAS_OFF] = 1;
 }
 
 void hue_advance_1(int32_t *data, int32_t progress_between_0_and_127) {
@@ -579,8 +600,9 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
     data[CURRENT_TIME_INDEX] = input.time;
 
     int init_delta = input.time - data[INIT_TIME_INDEX];
-    if (init_delta > 1000 && init_delta < 2000) {
+    if (init_delta > 1000 && init_delta < 2000 && !data[INIT_COMPLETE_INDEX]) {
         bl_midi(RELOOP_LEFT_STATUS, RELOOP_LEFT_KIND, 0);
+        data[INIT_COMPLETE_INDEX] = 1;
     }
 
     // Volume indicators.
@@ -593,10 +615,17 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
         } else if (data[BEAT_HUE_ANIMATE_SPEED_INDEX] == 0) {
             bpm_modifier = map(1, 1, 2, 60, 70);
         }
-        bl_midi(0xb1, 02, bpm_modifier);
+
+        if (data[LAST_MIDI_WRITE_VOLUME_INDICATOR] != bpm_modifier) {
+            bl_midi(0xb1, 02, bpm_modifier);
+            data[LAST_MIDI_WRITE_VOLUME_INDICATOR] = bpm_modifier;
+        }
     } else {
-        int volume_value = map(input.volume, 0, 150, 0, 127);
-        bl_midi(0xb1, 02, volume_value);
+        if (data[LAST_MIDI_WRITE_VOLUME_INDICATOR] != input.volume) {
+            int volume_value = map(input.volume, 0, 150, 0, 127);
+            bl_midi(0xb1, 02, volume_value);
+            data[LAST_MIDI_WRITE_VOLUME_INDICATOR] = input.volume;
+        }
     }
 
     for (int i = 0; i < midi_len; i++) {
@@ -693,10 +722,10 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
         } else {
             // ONLY LOG THIS WHEN A SPECIFIC MODE IS ENABLED.
 
-            bl_puts("==========");
-            bl_log_int(midi[i].status);
-            bl_log_int(midi[i].kind);
-            bl_log_int(midi[i].value);
+            // bl_puts("==========");
+            // bl_log_int(midi[i].status);
+            // bl_log_int(midi[i].kind);
+            // bl_log_int(midi[i].value);
         }
     }
 
@@ -737,20 +766,30 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
 
     // Normal lights.
 
-    dmx[21] = volume_to_brightness;
-    dmx[22] = r;
-    dmx[23] = g;
-    dmx[24] = b;
+    // dmx[21] = volume_to_brightness;
+    // dmx[22] = r;
+    // dmx[23] = g;
+    // dmx[24] = b;
+
 
     // TODO; diffusor
-    dmx[177] = r;
-    dmx[178] = g;
-    dmx[179] = b;
-    dmx[180] = volume_to_brightness;
 
-    dmx[201] = map(r, 0, 255, 0, volume_to_brightness);
-    dmx[202] = map(g, 0, 255, 0, volume_to_brightness);
-    dmx[203] = map(b, 0, 255, 0, volume_to_brightness);
+    dmx[40] = volume_to_brightness;
+    dmx[41] = r;
+    dmx[42] = g;
+    dmx[43] = b;
+
+    dmx[250] = map(r, 0, 255, 0, volume_to_brightness);
+    dmx[251] = map(g, 0, 255, 0, volume_to_brightness);
+    dmx[252] = map(b, 0, 255, 0, volume_to_brightness);
+    dmx[253] = 0;
+    dmx[254] = 0;
+
+    dmx[260] = map(r, 0, 255, 0, volume_to_brightness);
+    dmx[261] = map(g, 0, 255, 0, volume_to_brightness);
+    dmx[262] = map(b, 0, 255, 0, volume_to_brightness);
+    dmx[263] = 0;
+    dmx[264] = 0;
 
     // dmx[100] = map(r, 0, 255, 0, volume_to_brightness);
     // dmx[101] = map(g, 0, 255, 0, volume_to_brightness);
@@ -761,7 +800,8 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
 
     if (!data[STROBE_ON] && data[STROBE_ACTIVE_INDEX] &&
         ((input.bass_avg < 50 && input.bass > 100 && !data[IS_STROBE_INDEX]) ||
-         (time_since_strobe_start < STROBE_TIME && data[IS_STROBE_INDEX]) && input.volume > 150)) {
+         (time_since_strobe_start < STROBE_TIME && data[IS_STROBE_INDEX]) && input.volume > 70)) {
+
         if (!data[IS_STROBE_INDEX]) {
             data[STROBE_START_INDEX] = input.time;
         }
@@ -828,7 +868,7 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
             // TODO: dont hardcode!!!
             // also only do this when the strobe is active!
             if (input.time - data[STROBE_BEGIN_TIME] > 5000 && !data[STROBE_WAS_OFF] &&
-                data[AUTO_ACTIVATE_STROBE_INDEX] && data[STROBE_TO_MUSIC_INDEX]) {
+                data[AUTO_ACTIVATE_STROBE_INDEX] && data[STROBE_TO_MUSIC_INDEX] && input.bass_avg > 100) {
                 bl_puts("AUTO deactivate strobe");
                 set_left_cue(data, 0);
                 data[STROBE_WAS_OFF] = 1;
@@ -855,7 +895,7 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
     }
 
     // Reactivate strobe if 5000 seconds since last bass.
-    if (data[AUTO_ACTIVATE_STROBE_INDEX] && data[CURRENT_TIME_INDEX] - data[LAST_BASS_TRIGGER_TIME_INDEX] > 100 &&
+    if (data[AUTO_ACTIVATE_STROBE_INDEX] && data[CURRENT_TIME_INDEX] - data[LAST_BASS_TRIGGER_TIME_INDEX] > 1000 &&
         !data[STROBE_ACTIVE_INDEX] && data[STROBE_WAS_OFF] && data[STROBE_TO_MUSIC_INDEX]) {
         bl_puts("AUTO Activate strobe.");
         set_left_cue(data, 1);

@@ -85,8 +85,13 @@ impl DmxUniverseBasic {
     }
 }
 
+struct DmxUniverseDummy {
+    basic: DmxUniverseBasic,
+    last_state: [u8; 513],
+}
+
 pub enum DmxUniverse {
-    Dummy(DmxUniverseBasic),
+    Dummy(DmxUniverseDummy),
     Real(DmxUniverseReal),
 }
 
@@ -105,26 +110,50 @@ impl DmxUniverse {
 
     pub fn new_dummy(midi_out: Sender<(u8, u8, u8)>, system_out: Sender<SystemMessage>) -> Self {
         let base = DmxUniverseBasic::new(midi_out, system_out);
-        Self::Dummy(base)
+        Self::Dummy(DmxUniverseDummy {
+            basic: base,
+            last_state: [0; 513],
+        })
     }
 
     pub fn signal(&mut self, signal: Signal) {
         match self {
-            DmxUniverse::Dummy(dummy) => dummy.signal(signal),
+            DmxUniverse::Dummy(dummy) => dummy.basic.signal(signal),
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.signal(signal),
         }
     }
 
     pub fn tick(&mut self, midi: &[(u8, u8, u8)]) -> anyhow::Result<Duration> {
         match self {
-            DmxUniverse::Dummy(dummy) => dummy.tick(midi),
+            DmxUniverse::Dummy(ref mut dummy)=> {
+                let dur = dummy.basic.tick(midi)?;
+
+                let mut modified = false;
+                for (a, b) in dummy.basic.channels.iter().zip(dummy.last_state.iter()) {
+                    if (a != b) {
+                        modified = true;
+                        break;
+                    }
+                }
+
+                if modified {
+                    dummy.basic
+                        .system_out
+                        .send(SystemMessage::DMX(dummy.basic.channels))
+                        .unwrap();
+
+                    dummy.last_state = dummy.basic.channels;
+                }
+
+                Ok(dur)
+            }
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.tick(midi),
         }
     }
 
     pub fn reload(&mut self) -> wasmtime::Result<()> {
         match self {
-            DmxUniverse::Dummy(dummy) => dummy.reload(),
+            DmxUniverse::Dummy(dummy) => dummy.basic.reload(),
             DmxUniverse::Real(dmx_universe_real) => dmx_universe_real.reload(),
         }
     }

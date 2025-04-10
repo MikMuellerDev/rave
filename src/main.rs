@@ -110,10 +110,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     //
-    // Begin MIDI.
-    //
-
-    //
     // End audio.
     //
 

@@ -8,7 +8,7 @@ import type { DMXData } from "./types";
 
 export enum TopicKind {
   BPM = 'Bpm',
-  DMX = 'dmx',
+  DMX = 'Dmx',
   Heartbeat = 'Heartbeat',
   AudioDevicesView = 'AudioDevicesView',
   AudioDeviceSelected  = 'SelectAudioDevice',
@@ -90,7 +90,7 @@ export function topicTickSpeed(): Topic<TopicKind.TickSpeed > {
 }
 
 export type UpdateMessage<T> = T extends TopicKind.DMX
-    ? { kind: Topic<T>; value: DMXData }
+    ? { kind: Topic<T>; value: number[] }
   : T extends TopicKind.Heartbeat
     ? { kind: Topic<T>; value: number }
   : T extends TopicKind.AudioDevicesView
