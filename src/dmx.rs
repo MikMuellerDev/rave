@@ -238,10 +238,10 @@ impl DmxUniverseReal {
 
         // TODO: is this right?
         // Only update on write?
-        self.base
-            .system_out
-            .send(SystemMessage::DMX(self.base.channels.clone()))
-            .unwrap();
+        // self.base
+        //     .system_out
+        //     .send(SystemMessage::DMX(self.base.channels.clone()))
+        //     .unwrap();
 
         self.write_to_serial();
 

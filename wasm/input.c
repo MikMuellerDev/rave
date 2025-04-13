@@ -365,6 +365,11 @@ void set_white(bool v, uint8_t *dmx, int32_t *data) {
     dmx[201] = brightness * v;
     dmx[202] = brightness * v;
     dmx[203] = brightness * v;
+
+    dmx[101] = brightness * v;
+    dmx[102] = brightness * v;
+    dmx[103] = brightness * v;
+    // dmx[104] = brightness * v;
 }
 
 void set_left_cue(int32_t *data, bool enabled) {
@@ -577,7 +582,7 @@ void initialize(TickInput input, uint8_t *dmx_array, int32_t dmx_len, int32_t *d
     set_left_performace_2_1(data, 1);
 
     data[LAST_MIDI_WRITE_VOLUME_INDICATOR] = 0;
-    
+
     data[STROBE_BEGIN_TIME] = input.time;
     data[STROBE_WAS_OFF] = 1;
 }
@@ -770,7 +775,6 @@ void tick(TickInput input, uint8_t *dmx, int32_t dmx_len, int32_t *data, int32_t
     // dmx[22] = r;
     // dmx[23] = g;
     // dmx[24] = b;
-
 
     // TODO; diffusor
 
